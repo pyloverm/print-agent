@@ -1,6 +1,6 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, NavLink } from 'react-router-dom';
-import { Dashboard, Configuration } from '@/pages';
+import { Dashboard, Configuration, Printers, Logs, About } from '@/pages';
 
 function App() {
   return (
@@ -26,6 +26,30 @@ function App() {
                 >
                   Configuration
                 </NavLink>
+                <NavLink
+                  to="/printers"
+                  className={({ isActive }) => 
+                    `py-4 px-2 ${isActive ? 'border-b-2 border-blue-500' : 'text-gray-500'}`
+                  }
+                >
+                  Printers
+                </NavLink>
+                <NavLink
+                  to="/logs"
+                  className={({ isActive }) => 
+                    `py-4 px-2 ${isActive ? 'border-b-2 border-blue-500' : 'text-gray-500'}`
+                  }
+                >
+                  Logs
+                </NavLink>
+                <NavLink
+                  to="/about"
+                  className={({ isActive }) => 
+                    `py-4 px-2 ${isActive ? 'border-b-2 border-blue-500' : 'text-gray-500'}`
+                  }
+                >
+                  About
+                </NavLink>
               </div>
             </div>
           </div>
@@ -35,6 +59,9 @@ function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/configuration" element={<Configuration />} />
+            <Route path="/printers" element={<Printers />} />
+            <Route path="/logs" element={<Logs />} />
+            <Route path="/about" element={<About />} />
           </Routes>
         </main>
       </div>
