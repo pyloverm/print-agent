@@ -3,6 +3,10 @@
   "productName": "QomandaAgent",
   "version": "1.0.0",
   "identifier": "com.qomanda.printagent",
+  "build": {
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../dist"
+  },
   "app": {
     "windows": [
       {
