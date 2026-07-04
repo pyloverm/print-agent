@@ -2,3 +2,10 @@
 /node_modules
 
 *.lock
+/src-tauri/target
+/src-tauri/target
+/src-tauri/target/release
+
+/src-tauri/binaries
+*.exe
+.exe
