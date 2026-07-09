@@ -28,6 +28,12 @@ function toStationState(printer: PrinterConfig | null): StationState {
 
 type TestState = { status: 'idle' } | { status: 'testing' } | { status: 'ok' } | { status: 'error'; message: string };
 
+const STATION_ICON: Record<'kitchen' | 'bar' | 'payment', string> = {
+  kitchen: '🍳',
+  bar: '🍹',
+  payment: '🧾',
+};
+
 export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
   const [serverUrl, setServerUrl] = useState(config.serverUrl);
   const [token, setToken] = useState(config.token);
@@ -35,13 +41,15 @@ export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
   const [pollMs, setPollMs] = useState(String(config.pollMs));
   const [kitchen, setKitchen] = useState<StationState>(toStationState(config.printers.kitchen));
   const [bar, setBar] = useState<StationState>(toStationState(config.printers.bar));
+  const [payment, setPayment] = useState<StationState>(toStationState(config.printers.payment));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [windowsPrinters, setWindowsPrinters] = useState<string[]>([]);
-  const [testState, setTestState] = useState<{ kitchen: TestState; bar: TestState }>({
+  const [testState, setTestState] = useState<{ kitchen: TestState; bar: TestState; payment: TestState }>({
     kitchen: { status: 'idle' },
     bar: { status: 'idle' },
+    payment: { status: 'idle' },
   });
 
   useEffect(() => {
@@ -74,6 +82,7 @@ export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
         printers: {
           kitchen: stationToPrinter(kitchen),
           bar: stationToPrinter(bar),
+          payment: stationToPrinter(payment),
         },
       });
       setSaved(true);
@@ -84,7 +93,7 @@ export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
     }
   }
 
-  async function handleTest(name: 'kitchen' | 'bar', station: StationState) {
+  async function handleTest(name: 'kitchen' | 'bar' | 'payment', station: StationState) {
     const printer = stationToPrinter(station);
     if (!printer) return;
     if (printer.kind === 'network' && !printer.host) return;
@@ -98,17 +107,18 @@ export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
     }
   }
 
-  function renderStation(name: 'kitchen' | 'bar', label: string, station: StationState, setStation: (s: StationState) => void) {
+  function renderStation(name: 'kitchen' | 'bar' | 'payment', label: string, station: StationState, setStation: (s: StationState) => void) {
     const test = testState[name];
     const canTest = station.kind === 'network' ? !!station.host : !!station.printerName;
     return (
-      <div className="printer-row">
+      <div className={`printer-row ${station.enabled ? 'printer-row--enabled' : ''}`}>
         <label className="printer-row__toggle">
           <input
             type="checkbox"
             checked={station.enabled}
             onChange={(e) => setStation({ ...station, enabled: e.target.checked })}
           />
+          <span className={`printer-row__icon printer-row__icon--${name}`}>{STATION_ICON[name]}</span>
           {label}
         </label>
         {station.enabled && (
@@ -232,6 +242,7 @@ export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
         <span>Impressoras</span>
         {renderStation('kitchen', 'Cozinha', kitchen, setKitchen)}
         {renderStation('bar', 'Bar', bar, setBar)}
+        {renderStation('payment', 'Pagamento', payment, setPayment)}
       </div>
 
       {error && <div className="form-error">{error}</div>}

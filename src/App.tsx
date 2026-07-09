@@ -30,15 +30,19 @@ function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [autostart, setAutostartState] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    getConfig().then(setConfig);
-    getStatus().then(setStatus);
-    getLogs().then(setLogs);
-    getAutostart().then(setAutostartState);
+    Promise.all([getConfig().then(setConfig), getStatus().then(setStatus), getLogs().then(setLogs), getAutostart().then(setAutostartState)]).finally(
+      () => setLoading(false)
+    );
 
     const unlistenLog = onAgentLog((entry) => setLogs((prev) => [...prev.slice(-199), entry]));
-    const unlistenStatus = onAgentStatus(setStatus);
+    const unlistenStatus = onAgentStatus((next) => {
+      setStatus(next);
+      setActionError(null);
+    });
 
     return () => {
       unlistenLog.then((fn) => fn());
@@ -53,12 +57,15 @@ function App() {
 
   async function handleToggleAgent() {
     setToggling(true);
+    setActionError(null);
     try {
       if (status.running) {
         await stopAgent();
       } else {
         await startAgent();
       }
+    } catch (err) {
+      setActionError(String(err));
     } finally {
       setToggling(false);
     }
@@ -66,21 +73,48 @@ function App() {
 
   async function handleAutostartChange(checked: boolean) {
     setAutostartState(checked);
+    setActionError(null);
     try {
       await setAutostart(checked);
-    } catch {
+    } catch (err) {
       setAutostartState(!checked);
+      setActionError(String(err));
     }
+  }
+
+  if (loading) {
+    return (
+      <div className="app app--loading">
+        <div className="app-loader">
+          <span className="app-loader__spinner" />
+          A carregar...
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="app">
       <header className="app__header">
-        <h1>Qomanda Print Agent</h1>
-        <p>Impressão automática de tickets nas impressoras do restaurante.</p>
+        <div className="app__header-icon" aria-hidden="true">
+          🖨️
+        </div>
+        <div>
+          <h1>Qomanda Print Agent</h1>
+          <p>Impressão automática de tickets nas impressoras do restaurante.</p>
+        </div>
       </header>
 
       <StatusBar status={status} onToggle={handleToggleAgent} busy={toggling} />
+
+      {actionError && (
+        <div className="banner banner--error" role="alert">
+          <span>{actionError}</span>
+          <button className="banner__dismiss" onClick={() => setActionError(null)} aria-label="Dispensar">
+            ×
+          </button>
+        </div>
+      )}
 
       <label className="autostart-toggle">
         <input type="checkbox" checked={autostart} onChange={(e) => handleAutostartChange(e.target.checked)} />

@@ -17,21 +17,21 @@ export default function StatusBar({ status, onToggle, busy }: Props) {
     ? 'status-dot status-dot--off'
     : status.lastPollOk === false
     ? 'status-dot status-dot--error'
-    : 'status-dot status-dot--ok';
+    : 'status-dot status-dot--ok status-dot--pulse';
 
   return (
     <div className="status-bar">
       <div className="status-bar__info">
         <span className={dotClass} />
         <div>
-          <div className="status-bar__label">
+          <div className="status-bar__label" aria-live="polite">
             {status.running ? 'Agente em execução' : 'Agente parado'}
           </div>
           <div className="status-bar__meta">Última verificação: {formatTime(status.lastPollAt)}</div>
         </div>
       </div>
-      <button className="btn" onClick={onToggle} disabled={busy}>
-        {status.running ? 'Parar' : 'Iniciar'}
+      <button className={`btn ${status.running ? 'btn--stop' : 'btn--primary'}`} onClick={onToggle} disabled={busy}>
+        {busy ? 'A processar...' : status.running ? 'Parar' : 'Iniciar'}
       </button>
       {status.lastError && <div className="status-bar__error">{status.lastError}</div>}
     </div>

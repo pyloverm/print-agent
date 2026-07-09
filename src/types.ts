@@ -10,6 +10,7 @@ export interface PrinterConfig {
 export interface PrintersConfig {
   kitchen: PrinterConfig | null;
   bar: PrinterConfig | null;
+  payment: PrinterConfig | null;
 }
 
 export interface AgentConfig {

@@ -4,6 +4,8 @@
   "version": "1.0.0",
   "identifier": "com.qomanda.printagent",
   "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "bun run build",
     "frontendDist": "../dist"
   },

@@ -87,6 +87,7 @@ pub fn spawn(app: AppHandle, config: AgentConfig) -> tauri::async_runtime::JoinH
                         let printer = match job.station.as_str() {
                             "kitchen" => config.printers.kitchen.clone(),
                             "bar" => config.printers.bar.clone(),
+                            "payment" => config.printers.payment.clone(),
                             _ => None,
                         };
                         let Some(printer) = printer else {

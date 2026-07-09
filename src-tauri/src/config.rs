@@ -33,6 +33,7 @@ impl PrinterConfig {
 pub struct PrintersConfig {
     pub kitchen: Option<PrinterConfig>,
     pub bar: Option<PrinterConfig>,
+    pub payment: Option<PrinterConfig>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
