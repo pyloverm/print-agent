@@ -146,6 +146,24 @@ Restante funcionamento:
 - Se o servidor estiver inacessível, o agente tenta de novo com backoff;
   os tickets em fila são impressos assim que a ligação volta.
 
+## Aplicação de ambiente de trabalho (Windows)
+
+Além do script `agent.mjs`, este repositório inclui uma app Tauri (bandeja do
+sistema + interface de configuração) em `src-tauri/`.
+
+O workflow `.github/workflows/build.yml` compila instaladores `.msi`/`.exe`
+para **64-bit (x86_64)** e **32-bit (i686)** a cada tag `v*` (anexados à
+release) ou manualmente via "Run workflow". Para compilar localmente:
+
+```bash
+rustup target add i686-pc-windows-msvc   # ou x86_64-pc-windows-msvc
+bun install
+bun run tauri build -- --target i686-pc-windows-msvc
+```
+
+Os instaladores ficam em
+`src-tauri/target/<target>/release/bundle/{msi,nsis}/`.
+
 ## Resolução de problemas
 
 | Sintoma | Causa provável |
