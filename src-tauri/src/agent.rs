@@ -89,6 +89,42 @@ fn wake_channel(token: &str) -> String {
     format!("print-agent-{}", &hex::encode(digest)[..32])
 }
 
+/// O campo "Tempo real" é preenchido à mão e recebe quase sempre um endereço
+/// colado do browser (`https://...`). O tungstenite só aceita `ws`/`wss` e
+/// rejeita o resto com "URL scheme not supported" — uma mensagem que não diz ao
+/// restaurante o que corrigir. Traduzimos aqui, como o `agent.cjs` já fazia:
+/// os dois agentes partilham o mesmo config.json e têm de o ler da mesma forma.
+fn websocket_base(realtime_url: &str) -> String {
+    let trimmed = realtime_url.trim().trim_end_matches('/');
+    if let Some(rest) = trimmed.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else if trimmed.starts_with("wss://") || trimmed.starts_with("ws://") {
+        trimmed.to_string()
+    } else {
+        // Sem esquema nenhum: assumir TLS, que é o caso em produção.
+        format!("wss://{trimmed}")
+    }
+}
+
+/// Simétrico do `websocket_base`: os dois campos são vizinhos no formulário e
+/// trocam-se com facilidade. Um `wss://` no endereço do servidor fazia o
+/// reqwest recusar o pedido com "builder error for url" — uma mensagem que não
+/// diz ao restaurante qual dos campos está errado.
+fn http_base(server_url: &str) -> String {
+    let trimmed = server_url.trim().trim_end_matches('/');
+    if let Some(rest) = trimmed.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    }
+}
+
 fn printer_label(printer: &PrinterConfig) -> String {
     match printer.kind {
         crate::config::PrinterKind::Usb => format!("{} (USB)", printer.printer_name),
@@ -291,7 +327,7 @@ async fn realtime_session(
 ) -> Result<bool, String> {
     let url = format!(
         "{}/app/{}?protocol=7&client={CLIENT_NAME}&version={CLIENT_VERSION}",
-        config.realtime_url.trim_end_matches('/'),
+        websocket_base(&config.realtime_url),
         config.realtime_key
     );
 
@@ -394,7 +430,7 @@ async fn wait_with_fallback_poll(
 
 pub fn spawn(app: AppHandle, config: AgentConfig) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
-        let server_url = config.server_url.trim_end_matches('/').to_string();
+        let server_url = http_base(&config.server_url);
         let client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
@@ -459,7 +495,7 @@ pub fn spawn(app: AppHandle, config: AgentConfig) -> tauri::async_runtime::JoinH
         log(
             &app,
             "info",
-            format!("Tempo real: {}", config.realtime_url.trim_end_matches('/')),
+            format!("Tempo real: {}", websocket_base(&config.realtime_url)),
         );
 
         let channel = wake_channel(&config.token);
@@ -499,4 +535,38 @@ pub fn spawn(app: AppHandle, config: AgentConfig) -> tauri::async_runtime::JoinH
             wait_with_fallback_poll(&tx, backoff, interval, &mut last_poll).await;
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normaliza_o_esquema_do_endereco_de_tempo_real() {
+        // O caso que apareceu em produção: endereço colado do browser.
+        assert_eq!(websocket_base("https://realtime.qomanda.eu"), "wss://realtime.qomanda.eu");
+        assert_eq!(websocket_base("http://127.0.0.1:8098"), "ws://127.0.0.1:8098");
+        assert_eq!(websocket_base("wss://realtime.qomanda.eu/"), "wss://realtime.qomanda.eu");
+        assert_eq!(websocket_base("ws://127.0.0.1:8098"), "ws://127.0.0.1:8098");
+        assert_eq!(websocket_base("  realtime.qomanda.eu  "), "wss://realtime.qomanda.eu");
+    }
+
+    #[test]
+    fn normaliza_o_esquema_do_endereco_do_servidor() {
+        // O outro caso que apareceu em produção: os dois campos trocados.
+        assert_eq!(http_base("wss://new.qomanda.eu"), "https://new.qomanda.eu");
+        assert_eq!(http_base("ws://127.0.0.1:8099"), "http://127.0.0.1:8099");
+        assert_eq!(http_base("https://new.qomanda.eu/"), "https://new.qomanda.eu");
+        assert_eq!(http_base("http://127.0.0.1:8099"), "http://127.0.0.1:8099");
+        assert_eq!(http_base("  new.qomanda.eu  "), "https://new.qomanda.eu");
+    }
+
+    #[test]
+    fn o_canal_e_o_sha256_do_token_truncado() {
+        // Tem de bater certo com src/lib/print-agent-channel.ts no servidor.
+        let channel = wake_channel("qpa_teste_1234567890");
+        assert!(channel.starts_with("print-agent-"));
+        assert_eq!(channel.len(), "print-agent-".len() + 32);
+        assert_eq!(channel, "print-agent-1ac93d6da8c39d1679a3fd01ec618c57");
+    }
 }

@@ -16,9 +16,13 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 chrono = { version = "0.4", features = ["clock"] }
 base64 = "0.22"
-# Tempo real (protocolo Pusher, servido pelo Soketi). native-tls para partilhar
-# a mesma stack TLS do reqwest e não empacotar dois backends no instalador.
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+# Tempo real (protocolo Pusher, servido pelo Soketi). Mesma stack TLS que o
+# reqwest acima (rustls + raízes webpki) para não empacotar dois backends no
+# instalador nem ter dois conjuntos de raízes a divergir.
+tokio-tungstenite = { version = "0.24", default-features = false, features = [
+  "connect",
+  "rustls-tls-webpki-roots",
+] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 # Derivação do nome do canal a partir do token — ver agent::wake_channel.
 sha2 = "0.10"

@@ -71,10 +71,23 @@ try {
   fatal(`Impossível ler a configuração em ${configPath}`, "Copie config.example.json para config.json e preencha-o.");
 }
 
-const SERVER_URL = (config.serverUrl || "").replace(/\/+$/, "");
+// `serverUrl` e `realtimeUrl` são vizinhos no config.json e trocam-se com
+// facilidade — um `wss://` no endereço do servidor daria uma ligação à porta
+// errada, e um `https://` no do tempo real um esquema recusado. Normalizar
+// aqui é mais barato do que explicar a diferença ao restaurante.
+function normalizeUrl(value, kind) {
+  const trimmed = String(value || "").trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  const rest = trimmed.replace(/^(https?|wss?):\/\//, "");
+  const secure = /^(https|wss):\/\//.test(trimmed) || !/^[a-z]+:\/\//.test(trimmed);
+  if (kind === "ws") return `${secure ? "wss" : "ws"}://${rest}`;
+  return `${secure ? "https" : "http"}://${rest}`;
+}
+
+const SERVER_URL = normalizeUrl(config.serverUrl, "http");
 const TOKEN = config.token || "";
 const PRINTERS = config.printers || {};
-const REALTIME_URL = (config.realtimeUrl || "").replace(/\/+$/, "");
+const REALTIME_URL = normalizeUrl(config.realtimeUrl, "ws");
 const REALTIME_KEY = config.realtimeKey || "";
 // Rede de segurança, só usada quando o WebSocket está em baixo.
 const FALLBACK_POLL_MS = Math.max(15000, config.fallbackPollMs || 60000);
