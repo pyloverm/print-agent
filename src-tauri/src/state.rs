@@ -13,13 +13,19 @@ pub struct LogEntry {
     pub message: String,
 }
 
+/// O estado que a barra superior mostra. `realtimeConnected` e `fallbackPolling`
+/// são mutuamente exclusivos enquanto o agente corre: ou o servidor nos avisa,
+/// ou estamos a perguntar de tempos a tempos porque o aviso não chega.
 #[derive(Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentStatus {
     pub running: bool,
-    pub last_poll_ok: Option<bool>,
+    pub realtime_configured: bool,
+    pub realtime_connected: bool,
+    pub fallback_polling: bool,
     pub last_error: Option<String>,
-    pub last_poll_at: Option<String>,
+    /// Último contacto bem-sucedido com o servidor (recolha de jobs).
+    pub last_activity_at: Option<String>,
 }
 
 pub struct AppState {

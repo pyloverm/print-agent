@@ -1,9 +1,0 @@
-{
-  "serverUrl": "https://o-seu-dominio-qomanda.com",
-  "token": "qpa_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "pollMs": 3000,
-  "printers": {
-    "kitchen": { "host": "192.168.1.50", "port": 9100 },
-    "bar": { "host": "192.168.1.51", "port": 9100 }
-  }
-}

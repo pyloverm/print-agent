@@ -238,6 +238,10 @@ body {
   background: var(--ok);
 }
 
+.status-dot--warn {
+  background: var(--warn);
+}
+
 .status-dot--error {
   background: var(--error);
 }
@@ -531,6 +535,22 @@ form .btn--primary {
   background: var(--ok-soft);
   padding: 8px 10px;
   border-radius: 7px;
+}
+
+.form-warning {
+  color: var(--warn);
+  font-size: 12.5px;
+  background: var(--warn-soft);
+  padding: 8px 10px;
+  border-radius: 7px;
+}
+
+.field__hint {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--text-muted);
 }
 
 .log-panel__header {

@@ -16,6 +16,13 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 chrono = { version = "0.4", features = ["clock"] }
 base64 = "0.22"
+# Tempo real (protocolo Pusher, servido pelo Soketi). native-tls para partilhar
+# a mesma stack TLS do reqwest e não empacotar dois backends no instalador.
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+# Derivação do nome do canal a partir do token — ver agent::wake_channel.
+sha2 = "0.10"
+hex = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Graphics_Printing", "Win32_Foundation"] }

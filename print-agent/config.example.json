@@ -7,6 +7,6 @@
   "printers": {
     "kitchen": { "host": "192.168.1.50", "port": 9100 },
     "bar": { "host": "192.168.1.51", "port": 9100 },
-    "payment": { "kind": "usb", "printerName": "POS-80" }
+    "payment": { "host": "192.168.1.52", "port": 9100 }
   }
 }

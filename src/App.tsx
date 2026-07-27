@@ -19,9 +19,11 @@ import type { AgentConfig, AgentStatus, LogEntry } from './types';
 
 const EMPTY_STATUS: AgentStatus = {
   running: false,
-  lastPollOk: null,
+  realtimeConfigured: false,
+  realtimeConnected: false,
+  fallbackPolling: false,
   lastError: null,
-  lastPollAt: null,
+  lastActivityAt: null,
 };
 
 function App() {

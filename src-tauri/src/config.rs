@@ -36,12 +36,24 @@ pub struct PrintersConfig {
     pub payment: Option<PrinterConfig>,
 }
 
+/// Rede de segurança, só usada quando o WebSocket está em baixo.
+pub const DEFAULT_FALLBACK_POLL_MS: u64 = 60_000;
+const MIN_FALLBACK_POLL_MS: u64 = 15_000;
+
+// `serde(default)` ao nível da struct: um config.json gravado por uma versão
+// anterior não tem `realtimeUrl`/`realtimeKey`/`fallbackPollMs`. Sem isto a
+// desserialização falhava e o `unwrap_or_default()` do `load()` apagava toda a
+// configuração do restaurante na primeira atualização.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct AgentConfig {
     pub server_url: String,
     pub token: String,
-    pub poll_ms: u64,
+    /// Servidor de tempo real (Soketi) e a sua chave pública. Vazios = o agente
+    /// arranca à mesma, mas fica preso ao poll de segurança.
+    pub realtime_url: String,
+    pub realtime_key: String,
+    pub fallback_poll_ms: u64,
     pub printers: PrintersConfig,
 }
 
@@ -50,7 +62,9 @@ impl Default for AgentConfig {
         Self {
             server_url: String::new(),
             token: String::new(),
-            poll_ms: 3000,
+            realtime_url: String::new(),
+            realtime_key: String::new(),
+            fallback_poll_ms: DEFAULT_FALLBACK_POLL_MS,
             printers: PrintersConfig::default(),
         }
     }
@@ -61,6 +75,14 @@ impl AgentConfig {
         let has_printer = self.printers.kitchen.as_ref().is_some_and(PrinterConfig::is_configured)
             || self.printers.bar.as_ref().is_some_and(PrinterConfig::is_configured);
         !self.server_url.trim().is_empty() && !self.token.trim().is_empty() && has_printer
+    }
+
+    pub fn realtime_enabled(&self) -> bool {
+        !self.realtime_url.trim().is_empty() && !self.realtime_key.trim().is_empty()
+    }
+
+    pub fn fallback_poll_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.fallback_poll_ms.max(MIN_FALLBACK_POLL_MS))
     }
 }
 

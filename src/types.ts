@@ -16,7 +16,11 @@ export interface PrintersConfig {
 export interface AgentConfig {
   serverUrl: string;
   token: string;
-  pollMs: number;
+  /** Servidor de tempo real (Soketi) e a sua chave pública. Vazios = poll permanente. */
+  realtimeUrl: string;
+  realtimeKey: string;
+  /** Rede de segurança, só usada quando o WebSocket está em baixo. */
+  fallbackPollMs: number;
   printers: PrintersConfig;
 }
 
@@ -28,7 +32,10 @@ export interface LogEntry {
 
 export interface AgentStatus {
   running: boolean;
-  lastPollOk: boolean | null;
+  realtimeConfigured: boolean;
+  realtimeConnected: boolean;
+  fallbackPolling: boolean;
   lastError: string | null;
-  lastPollAt: string | null;
+  /** Último contacto bem-sucedido com o servidor. */
+  lastActivityAt: string | null;
 }

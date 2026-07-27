@@ -38,7 +38,9 @@ export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
   const [serverUrl, setServerUrl] = useState(config.serverUrl);
   const [token, setToken] = useState(config.token);
   const [showToken, setShowToken] = useState(false);
-  const [pollMs, setPollMs] = useState(String(config.pollMs));
+  const [realtimeUrl, setRealtimeUrl] = useState(config.realtimeUrl);
+  const [realtimeKey, setRealtimeKey] = useState(config.realtimeKey);
+  const [fallbackPollMs, setFallbackPollMs] = useState(String(config.fallbackPollMs));
   const [kitchen, setKitchen] = useState<StationState>(toStationState(config.printers.kitchen));
   const [bar, setBar] = useState<StationState>(toStationState(config.printers.bar));
   const [payment, setPayment] = useState<StationState>(toStationState(config.printers.payment));
@@ -78,7 +80,9 @@ export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
       await onSave({
         serverUrl: serverUrl.trim(),
         token: token.trim(),
-        pollMs: parseInt(pollMs, 10) || 3000,
+        realtimeUrl: realtimeUrl.trim(),
+        realtimeKey: realtimeKey.trim(),
+        fallbackPollMs: parseInt(fallbackPollMs, 10) || 60000,
         printers: {
           kitchen: stationToPrinter(kitchen),
           bar: stationToPrinter(bar),
@@ -233,9 +237,42 @@ export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
         </div>
       </label>
 
+      <div className="field">
+        <span>Tempo real</span>
+        <p className="field__hint">
+          O agente fica à espera que o servidor o avise, em vez de perguntar de tempos a tempos. Sem
+          estes dois campos imprime na mesma, mas em modo degradado — ver o README.
+        </p>
+        <input
+          type="text"
+          placeholder="wss://realtime.o-seu-dominio-qomanda.com"
+          value={realtimeUrl}
+          onChange={(e) => setRealtimeUrl(e.target.value)}
+        />
+        <input
+          type="text"
+          placeholder="Chave pública do servidor de tempo real"
+          value={realtimeKey}
+          onChange={(e) => setRealtimeKey(e.target.value)}
+        />
+        {!(realtimeUrl.trim() && realtimeKey.trim()) && (
+          <div className="form-warning">
+            Por preencher: o agente vai consultar o servidor de {Math.round((parseInt(fallbackPollMs, 10) || 60000) / 1000)} em{' '}
+            {Math.round((parseInt(fallbackPollMs, 10) || 60000) / 1000)} segundos, permanentemente.
+          </div>
+        )}
+      </div>
+
       <label className="field field--narrow">
-        <span>Intervalo de verificação (ms)</span>
-        <input type="number" min={1500} value={pollMs} onChange={(e) => setPollMs(e.target.value)} />
+        <span>Poll de segurança (ms)</span>
+        <input
+          type="number"
+          min={15000}
+          step={1000}
+          value={fallbackPollMs}
+          onChange={(e) => setFallbackPollMs(e.target.value)}
+        />
+        <span className="field__hint">Só usado enquanto o tempo real estiver em baixo. Mínimo 15 s.</span>
       </label>
 
       <div className="field">

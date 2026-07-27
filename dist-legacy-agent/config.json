@@ -1,0 +1,19 @@
+{
+  "serverUrl": "https://qomanda.eu",
+  "token": "qpa_122b2fa3ade7409595569661b73199fe",
+  "pollMs": 3000,
+  "printers": {
+    "kitchen": {
+      "kind": "usb",
+      "printerName": "HPRT MPT-II"
+    },
+    "bar": {
+      "kind": "usb",
+      "printerName": "POS-80"
+    },
+    "payment": {
+      "kind": "usb",
+      "printerName": "POS-80"
+    }
+  }
+}
