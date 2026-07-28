@@ -33,9 +33,15 @@ interface.
 
 1. No dashboard Qomanda: **Equipa → Impressão** — escolha o fornecedor
    *Agente local* e copie o **token do agente**.
-2. Copie `dist-legacy-agent/qomanda-print-agent-win7.exe` (gerar com
-   `npm run agent:build:win7`, ver secção seguinte) para o PC do
-   restaurante, ex: `C:\qomanda\`.
+2. Copie o `.exe` correspondente à arquitetura do PC (gerar com
+   `npm run agent:build:win7`, ver secção seguinte) para o PC do restaurante,
+   ex: `C:\qomanda\`:
+   - **64 bits**: `dist-legacy-agent/qomanda-print-agent-win7-x64.exe`
+   - **32 bits**: `dist-legacy-agent/qomanda-print-agent-win7-x86.exe`
+
+   Na dúvida, veja em *Painel de Controlo → Sistema* → "Tipo de sistema". O
+   `.exe` de 32 bits também corre em Windows de 64 bits (via WOW64), por isso
+   é a escolha segura se não conseguir confirmar.
 3. Ao lado do `.exe`, copie `config.example.json` para `config.json` e preencha
    `serverUrl`, `token` (o token copiado no passo 1), `realtimeUrl` /
    `realtimeKey` (o servidor de tempo real e a sua chave pública — **sem eles
@@ -48,21 +54,34 @@ interface.
    - **Impressora USB/local**: `{ "kind": "usb", "printerName": "POS-80" }`
      — o nome exato tal como aparece em *Definições → Impressoras* do
      Windows.
-4. Corra `qomanda-print-agent-win7.exe` (duplo clique, ou a partir da consola
+4. Corra o `.exe` (duplo clique, ou a partir da consola
    para ver os logs).
 
-## Gerar o `.exe` (para quem faz o build)
+## Gerar os `.exe` (para quem faz o build)
 
-O `.exe` embute um runtime Node.js 12 — a última versão com suporte oficial
+Cada `.exe` embute um runtime Node.js 12 — a última versão com suporte oficial
 a Windows 7 — para não depender do que estiver instalado no PC do restaurante.
 
 ```bash
 npm install
-npm run agent:build:win7
+npm run agent:build:win7          # gera as duas arquiteturas
 ```
 
-Produz `dist-legacy-agent/qomanda-print-agent-win7.exe`. Distribua esse
-ficheiro junto com `config.example.json`.
+Produz `qomanda-print-agent-win7-x64.exe` (~29 MB) e
+`qomanda-print-agent-win7-x86.exe` (~25 MB) em `dist-legacy-agent/`.
+Distribua o ficheiro certo junto com `config.example.json`.
+
+As duas arquiteturas usam empacotadores diferentes, e não por gosto: o `pkg`
+**não consegue** gerar 32 bits, porque o projeto `pkg-fetch` nunca publicou
+binários base `win-x86` — pedir-lhe `node12-win-x86` faz com que tente
+compilar o Node a partir do código-fonte, o que exige o Visual Studio e falha
+em qualquer máquina normal. O `nexe` publica um base `windows-x86-12.18.2`
+pré-compilado, e é esse que gera o 32 bits.
+
+```bash
+npm run agent:build:win7:x64      # pkg
+npm run agent:build:win7:x86      # nexe
+```
 
 ## Instalação (Windows 10/11 com Node.js já instalado)
 
@@ -77,7 +96,7 @@ node agent.cjs caminho/para/config.json
 Crie um atalho na pasta Arranque (`shell:startup`) com o alvo:
 
 ```
-C:\qomanda\qomanda-print-agent-win7.exe
+C:\qomanda\qomanda-print-agent-win7-x64.exe
 ```
 
 (ou, a correr via Node.js: `node C:\qomanda\agent.cjs C:\qomanda\config.json`)

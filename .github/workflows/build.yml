@@ -10,7 +10,8 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  # App Tauri (Windows 10/11) — instaladores .msi e .exe
+  tauri:
     strategy:
       fail-fast: false
       matrix:
@@ -28,8 +29,20 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
       - name: Install frontend dependencies
         run: bun install
+
+      # Os testes são independentes da arquitetura do instalador — correm no
+      # host. Uma vez chega; repeti-los na matriz só gastava minutos.
+      - name: Run agent tests
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Build Tauri app (${{ matrix.target }})
         run: bunx tauri build --target ${{ matrix.target }}
@@ -49,5 +62,87 @@ jobs:
           files: |
             src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
             src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Agente legado (Windows 7 SP1 / 8 / 8.1) — executáveis autónomos.
+  #
+  # As duas arquiteturas usam empacotadores diferentes, e não por gosto: o
+  # `pkg` não consegue gerar 32 bits, porque o `pkg-fetch` nunca publicou
+  # binários base `win-x86` — pedir-lhe `node12-win-x86` fá-lo tentar compilar
+  # o Node a partir do código-fonte, o que exige o Visual Studio e falha. O
+  # `nexe` publica um base `windows-x86-12.18.2` pré-compilado. Ver o README.
+  legacy-agent:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      # Os dois empacotadores descarregam o seu runtime Node 12 de releases do
+      # GitHub. Em cache, um build seguinte não volta a ir à rede.
+      - name: Cache packager runtimes
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pkg-cache
+            ~/.nexe
+          key: legacy-runtimes-${{ hashFiles('package.json') }}
+          restore-keys: legacy-runtimes-
+
+      - name: Build legacy agent (64-bit)
+        run: bun run agent:build:win7:x64
+
+      - name: Build legacy agent (32-bit)
+        run: bun run agent:build:win7:x86
+
+      # Um .exe com a arquitetura errada arranca na máquina de build e falha na
+      # do restaurante. Lemos o cabeçalho PE em vez de confiar no nome.
+      - name: Verify binary architectures
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            let failed = false;
+            for (const pair of process.argv.slice(1)) {
+              const [file, want] = pair.split("=");
+              const fd = fs.openSync(file, "r");
+              const b = Buffer.alloc(4);
+              fs.readSync(fd, b, 0, 4, 0x3c);
+              const m = Buffer.alloc(6);
+              fs.readSync(fd, m, 0, 6, b.readUInt32LE(0));
+              fs.closeSync(fd);
+              const got = m.readUInt16LE(4).toString(16);
+              const ok = got === want;
+              if (!ok) failed = true;
+              console.log((ok ? "OK  " : "ERRO") + "  " + file + "  esperado=" + want + " obtido=" + got);
+            }
+            process.exit(failed ? 1 : 0);
+          ' \
+            "dist-legacy-agent/qomanda-print-agent-win7-x64.exe=8664" \
+            "dist-legacy-agent/qomanda-print-agent-win7-x86.exe=14c"
+
+      - name: Upload legacy agents
+        uses: actions/upload-artifact@v4
+        with:
+          name: QomandaAgent-legacy-win7
+          path: |
+            dist-legacy-agent/qomanda-print-agent-win7-x64.exe
+            dist-legacy-agent/qomanda-print-agent-win7-x86.exe
+            config.example.json
+
+      - name: Attach legacy agents to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-legacy-agent/qomanda-print-agent-win7-x64.exe
+            dist-legacy-agent/qomanda-print-agent-win7-x86.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
