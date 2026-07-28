@@ -9,12 +9,13 @@ Este repositório tem **dois agentes**:
 - **App Tauri** (`src/`, `src-tauri/`) — interface gráfica, suporte a
   impressoras de rede e USB, **tempo real por WebSocket**. Para Windows 10/11.
   É o agente recomendado.
-- **`agent.cjs`** (na raiz) — script minimalista sem GUI, sem dependências,
-  com suporte a impressoras de rede e USB. Para PCs mais antigos (Windows 7
+- **`agent.cjs`** (na raiz) — sem dependências, com suporte a impressoras de
+  rede e USB e **interface no navegador**. Para PCs mais antigos (Windows 7
   SP1, 8, 8.1) onde a app Tauri/WebView2 não é fiável.
 
-Os dois usam o mesmo modelo de tempo real e o mesmo `config.json` — só muda a
-interface.
+Os dois usam o mesmo modelo de tempo real e o mesmo `config.json`, e os dois
+têm formulário de configuração, teste de impressora e registo em direto — só
+muda a moldura (janela nativa contra separador do navegador).
 
 ## Requisitos (agente `agent.cjs`)
 
@@ -42,20 +43,32 @@ interface.
    Na dúvida, veja em *Painel de Controlo → Sistema* → "Tipo de sistema". O
    `.exe` de 32 bits também corre em Windows de 64 bits (via WOW64), por isso
    é a escolha segura se não conseguir confirmar.
-3. Ao lado do `.exe`, copie `config.example.json` para `config.json` e preencha
-   `serverUrl`, `token` (o token copiado no passo 1), `realtimeUrl` /
-   `realtimeKey` (o servidor de tempo real e a sua chave pública — **sem eles
-   o agente arranca à mesma, mas em modo degradado**, ver "Como funciona"), e
-   `printers` — uma entrada por posto (`kitchen`, `bar`, `payment`, ou
-   qualquer outro nome de posto usado no dashboard):
-   - **Impressora de rede**: `{ "host": "192.168.1.50", "port": 9100 }`
-     — o IP imprime-se geralmente com o auto-teste da impressora
-     (desligar, manter FEED premido, ligar).
-   - **Impressora USB/local**: `{ "kind": "usb", "printerName": "POS-80" }`
-     — o nome exato tal como aparece em *Definições → Impressoras* do
-     Windows.
-4. Corra o `.exe` (duplo clique, ou a partir da consola
-   para ver os logs).
+3. Corra o `.exe` (duplo clique). O agente abre sozinho o navegador na sua
+   interface, em `http://127.0.0.1:7654`.
+4. Na página: cole o **token**, escolha as impressoras por posto — as
+   instaladas no Windows aparecem numa lista — e carregue em **Testar** para
+   confirmar que sai papel. **Guardar** aplica tudo de imediato, sem
+   reiniciar o agente.
+
+Não é preciso editar `config.json` à mão: a página grava-o. O ficheiro
+continua a poder ser preenchido manualmente se preferir (ver
+`config.example.json`), nomeadamente para instalações em série.
+
+### A interface
+
+Servida pelo próprio agente, só em `127.0.0.1` — nunca fica exposta à rede do
+restaurante, porque a página mostra o token do agente. O endereço leva uma
+chave de sessão gerada a cada arranque (`?k=...`), o que impede outra página
+aberta no navegador de falar com o agente; é por isso que só funciona pelo
+endereço que o agente abre ou escreve na consola.
+
+- Porta ocupada? Defina outra com `"uiPort": 7655` no `config.json`.
+- A correr como serviço, para não abrir o navegador: `"openBrowser": false`
+  (ou a variável de ambiente `QOMANDA_NO_BROWSER=1`). A interface continua
+  acessível pelo endereço.
+- A página é escrita em ES5 e usa `XMLHttpRequest`, para funcionar no Internet
+  Explorer 11 — o navegador por omissão de um Windows 7 acabado de instalar.
+  Não lhe acrescente `fetch`, `const` ou arrow functions sem testar lá.
 
 ## Gerar os `.exe` (para quem faz o build)
 
@@ -147,9 +160,10 @@ Restante funcionamento:
   talão**. Não se perde nada: ao voltar a subscrever, o agente recolhe tudo o
   que se acumulou, e um talão reclamado mas nunca confirmado é reentregue pelo
   servidor. Os talões atrasam-se, não desaparecem.
-- Sem `realtimeUrl`/`realtimeKey` o agente **recusa-se a arrancar**, em vez de
-  ficar a correr sem receber nada. A app Tauri mostra-o a vermelho na barra de
-  estado; o `agent.cjs` sai com uma mensagem.
+- Com a configuração incompleta (sem token, sem impressora, sem tempo real) o
+  agente **arranca à mesma e abre a interface**, mas não liga ao tempo real e
+  diz o que falta. Antes terminava com uma mensagem na consola, o que no
+  Windows 7 era um piscar de olhos e nada mais.
 - Se o posto *Pagamento* não estiver configurado, os recibos saem na impressora
   do bar (ou, na falta desta, na da cozinha), com um aviso nos logs.
 - O `agent.cjs` traz um cliente WebSocket próprio, escrito à mão sobre `net`/

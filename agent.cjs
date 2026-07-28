@@ -43,32 +43,21 @@ const http = require("http");
 const https = require("https");
 const { URL } = require("url");
 
-// ── Erros fatais ────────────────────────────────────────────────────────
-// Ao abrir o .exe com duplo clique, o Windows fecha a janela da consola
-// assim que o processo termina — um erro fatal seria ilegível num piscar de
-// olhos. Se a consola for interativa (duplo clique ou terminal), esperamos
-// por ENTER antes de sair; em serviços/NSSM (stdin não é TTY) saímos logo.
-let hasFatalError = false;
-function fatal(...lines) {
-  if (hasFatalError) return; // já há um prompt "ENTER para fechar" pendente
-  hasFatalError = true;
-  for (const line of lines) console.error(`[qomanda-agent] ${line}`);
-  if (process.stdin.isTTY) {
-    console.error("\nPrima ENTER para fechar...");
-    process.stdin.resume();
-    process.stdin.once("data", () => process.exit(1));
-  } else {
-    process.exit(1);
-  }
-}
+// Nota: em versões anteriores, uma configuração em falta matava o processo
+// com um "Prima ENTER para fechar". Com a interface web isso deixou de fazer
+// sentido — arrancar e mostrar o formulário é precisamente a resposta certa a
+// uma configuração incompleta. O agente já não termina sozinho.
 
 // ── Config ──────────────────────────────────────────────────────────────
 const configPath = resolve(process.argv[2] || "./config.json");
+// Uma configuração em falta deixou de ser fatal: é precisamente o caso em que
+// o restaurante precisa da interface para a preencher. O que impede o agente
+// de imprimir fica registado em `configIssues()` e aparece no ecrã.
 let config = {};
 try {
   config = JSON.parse(readFileSync(configPath, "utf8"));
 } catch (err) {
-  fatal(`Impossível ler a configuração em ${configPath}`, "Copie config.example.json para config.json e preencha-o.");
+  config = {};
 }
 
 // `serverUrl` e `realtimeUrl` são vizinhos no config.json e trocam-se com
@@ -84,29 +73,79 @@ function normalizeUrl(value, kind) {
   return `${secure ? "https" : "http"}://${rest}`;
 }
 
-const SERVER_URL = normalizeUrl(config.serverUrl || "https://new.qomanda.eu", "http");
-const TOKEN = config.token || "";
-const PRINTERS = config.printers || {};
-const REALTIME_URL = normalizeUrl(config.realtimeUrl || "https://realtime.qomanda.eu", "ws");
-const REALTIME_KEY = config.realtimeKey || "a0g4w5Gk3ujFL9wurqHyCdEOmf5fQdLsFLHtHw139pBmZFojPrXQSIWx9Zd6BtxAl2fywhXq379ZG0hSF7jw";
+const DEFAULT_SERVER_URL = "https://new.qomanda.eu";
+const DEFAULT_REALTIME_URL = "https://realtime.qomanda.eu";
+const DEFAULT_REALTIME_KEY =
+  "a0g4w5Gk3ujFL9wurqHyCdEOmf5fQdLsFLHtHw139pBmZFojPrXQSIWx9Zd6BtxAl2fywhXq379ZG0hSF7jw";
 const PRINT_TIMEOUT_MS = 10000;
 const REQUEST_TIMEOUT_MS = 10000;
+const STATIONS = ["kitchen", "bar", "payment"];
 
-if (!SERVER_URL || !TOKEN) {
-  fatal("serverUrl e token são obrigatórios na configuração.");
-}
-if (Object.keys(PRINTERS).length === 0) {
-  fatal("Configure pelo menos uma impressora (ex: kitchen, bar, payment) com host e port.");
-}
-
-const REALTIME_ENABLED = Boolean(REALTIME_URL && REALTIME_KEY);
-
+// Estado derivado da configuração. Deixou de ser `const` porque a interface
+// web grava alterações em execução — mudar o token muda o canal de despertar,
+// e isso obriga a refazer a ligação de tempo real sem reiniciar o agente.
+let SERVER_URL = "";
+let TOKEN = "";
+let PRINTERS = {};
+let REALTIME_URL = "";
+let REALTIME_KEY = "";
+let REALTIME_ENABLED = false;
 /**
  * Canal de despertar. DEVE ser idêntico ao cálculo de
  * src/lib/print-agent-channel.ts no servidor — se divergir, o agente escuta um
  * canal onde ninguém publica e nunca recebe um único talão.
  */
-const CHANNEL = `print-agent-${createHash("sha256").update(TOKEN).digest("hex").slice(0, 32)}`;
+let CHANNEL = "";
+
+function applyConfig(next) {
+  config = next || {};
+  SERVER_URL = normalizeUrl(config.serverUrl || DEFAULT_SERVER_URL, "http");
+  TOKEN = String(config.token || "").trim();
+  PRINTERS = config.printers || {};
+  REALTIME_URL = normalizeUrl(config.realtimeUrl || DEFAULT_REALTIME_URL, "ws");
+  REALTIME_KEY = config.realtimeKey || DEFAULT_REALTIME_KEY;
+  REALTIME_ENABLED = Boolean(REALTIME_URL && REALTIME_KEY);
+  CHANNEL = TOKEN ? `print-agent-${createHash("sha256").update(TOKEN).digest("hex").slice(0, 32)}` : "";
+}
+
+/** O que ainda impede o agente de imprimir. Vazio = pronto a funcionar. */
+function configIssues() {
+  const issues = [];
+  if (!TOKEN) issues.push("Falta o token do agente.");
+  if (!SERVER_URL) issues.push("Falta o endereço do servidor.");
+  if (!REALTIME_ENABLED) issues.push("Falta o servidor de tempo real.");
+  const hasPrinter = STATIONS.some(function (station) {
+    const p = PRINTERS[station];
+    return p && (p.host || p.printerName);
+  });
+  if (!hasPrinter) issues.push("Nenhuma impressora configurada.");
+  return issues;
+}
+
+function isReady() {
+  return configIssues().length === 0;
+}
+
+applyConfig(config);
+
+// ── Registo ─────────────────────────────────────────────────────────────
+// Os mesmos eventos vão para a consola (útil quando corre como serviço) e
+// para um anel em memória que a interface web lê. Sem ficheiro de log: num PC
+// de restaurante ninguém o vai consultar, e crescer sem limite é pior.
+const MAX_LOGS = 200;
+const logs = [];
+const REALTIME_STATE = { connected: false, lastError: null, lastActivityAt: null };
+
+function pushLog(level, message) {
+  const entry = { ts: new Date().toISOString(), level, message };
+  logs.push(entry);
+  if (logs.length > MAX_LOGS) logs.shift();
+  const line = `[qomanda-agent] ${message}`;
+  if (level === "error") console.error(line);
+  else if (level === "warn") console.warn(line);
+  else console.log(line);
+  return entry;
+}
 
 // ── HTTP (sem fetch — compatível com Node 12+) ──────────────────────────
 function request(url, options) {
@@ -351,7 +390,7 @@ async function reportJob(jobId, ok, error) {
       body: JSON.stringify({ ok, error }),
     });
   } catch (err) {
-    console.error(`[qomanda-agent] Falha ao reportar o job ${jobId}:`, err.message);
+    pushLog("error", `Falha ao reportar o job ${jobId}: ${err.message}`);
   }
 }
 
@@ -373,10 +412,11 @@ function resolvePrinter(station) {
     if (fallback) {
       if (!warnedPaymentFallback) {
         warnedPaymentFallback = true;
-        console.warn(
-          `[qomanda-agent] Sem impressora "payment" configurada — os recibos vão sair em ${printerLabel(fallback)}.`
+        pushLog(
+          "warn",
+          `Sem impressora "Pagamento" configurada — os recibos vão sair em ${printerLabel(fallback)}.`
         );
-        console.warn('[qomanda-agent] Acrescente "payment" a "printers" no config.json para os separar.');
+        pushLog("warn", "Configure o posto Pagamento para os separar.");
       }
       return fallback;
     }
@@ -398,14 +438,16 @@ async function drainJobs(reason) {
   draining = true;
   try {
     const jobs = await fetchJobs();
+    REALTIME_STATE.lastActivityAt = new Date().toISOString();
+    REALTIME_STATE.lastError = null;
     if (jobs.length > 0) {
-      console.log(`[qomanda-agent] ${jobs.length} job(s) recebido(s) (${reason}).`);
+      pushLog("info", `${jobs.length} job(s) recebido(s) (${reason}).`);
     }
 
     for (const job of jobs) {
       const printer = resolvePrinter(job.station);
       if (!printer) {
-        console.warn(`[qomanda-agent] Sem impressora configurada para "${job.station}" — job ${job.id} falhado.`);
+        pushLog("warn", `Sem impressora configurada para "${job.station}" — job ${job.id} falhado.`);
         await reportJob(job.id, false, `Sem impressora configurada para o posto "${job.station}" no agente.`);
         continue;
       }
@@ -413,15 +455,16 @@ async function drainJobs(reason) {
       const data = Buffer.from(job.dataBase64, "base64");
       try {
         await printRaw(printer, data);
-        console.log(`[qomanda-agent] ✓ Impresso job ${job.id} (${job.station}) em ${printerLabel(printer)}`);
+        pushLog("success", `Impresso job ${job.id} (${job.station}) em ${printerLabel(printer)}`);
         await reportJob(job.id, true);
       } catch (err) {
-        console.error(`[qomanda-agent] ✗ Falha no job ${job.id} (${job.station}):`, err.message);
+        pushLog("error", `Falha no job ${job.id} (${job.station}): ${err.message}`);
         await reportJob(job.id, false, err.message);
       }
     }
   } catch (err) {
-    console.error(`[qomanda-agent] Erro ao recolher jobs: ${err.message}`);
+    REALTIME_STATE.lastError = err.message;
+    pushLog("error", `Erro ao recolher jobs: ${err.message}`);
   } finally {
     draining = false;
     if (drainAgain) {
@@ -725,7 +768,9 @@ function connectRealtime() {
           break;
 
         case "pusher_internal:subscription_succeeded":
-          console.log("[qomanda-agent] Tempo real ligado — à espera de trabalhos.");
+          REALTIME_STATE.connected = true;
+          REALTIME_STATE.lastError = null;
+          pushLog("success", "Tempo real ligado — à espera de trabalhos.");
           // Apanhar o que possa ter sido enfileirado enquanto estávamos offline.
           drainJobs("ligação estabelecida");
           break;
@@ -735,7 +780,7 @@ function connectRealtime() {
           break;
 
         case "pusher:error":
-          console.error(`[qomanda-agent] Erro do servidor de tempo real: ${JSON.stringify(msg.data)}`);
+          pushLog("error", `Erro do servidor de tempo real: ${JSON.stringify(msg.data)}`);
           break;
 
         case "job-queued":
@@ -755,6 +800,8 @@ function connectRealtime() {
 function scheduleReconnect(why) {
   ws = null;
   stopKeepalive();
+  REALTIME_STATE.connected = false;
+  REALTIME_STATE.lastError = why;
   if (reconnectTimer) return;
   reconnectAttempts++;
   // Backoff exponencial travado a 60 s.
@@ -763,35 +810,565 @@ function scheduleReconnect(why) {
   // até à fila. A recolha feita ao subscrever recupera tudo o que se acumulou
   // entretanto, e o servidor reentrega o que nunca foi confirmado — os talões
   // atrasam-se, não se perdem.
-  console.warn(`[qomanda-agent] Tempo real em baixo (${why}) — nova tentativa em ${delay / 1000}s.`);
+  pushLog("warn", `Tempo real em baixo (${why}) — nova tentativa em ${delay / 1000}s.`);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connectRealtime();
   }, delay);
 }
 
-// ── Arranque ────────────────────────────────────────────────────────────
-if (!hasFatalError) {
-  console.log(`[qomanda-agent] Qomanda Print Agent iniciado.`);
-  console.log(`[qomanda-agent] Servidor: ${SERVER_URL}`);
-  console.log(
-    `[qomanda-agent] Impressoras: ${Object.entries(PRINTERS)
-      .map(([st, p]) => `${st} → ${printerLabel(p)}`)
-      .join(" · ")}`
-  );
+/**
+ * Aplica uma configuração nova sem reiniciar o agente. Mudar o token muda o
+ * canal de despertar, por isso a ligação de tempo real tem de ser refeita —
+ * senão o agente continuava a escutar o canal do token antigo.
+ */
+function reloadConfig(next) {
+  const before = { channel: CHANNEL, url: REALTIME_URL, key: REALTIME_KEY };
+  applyConfig(next);
+  writeFileSync(configPath, JSON.stringify(next, null, 2), "utf8");
+  warnedPaymentFallback = false;
+  pushLog("info", "Configuração gravada.");
 
-  // Sem poll de segurança, o tempo real é o ÚNICO caminho até à fila. Um agente
-  // sem servidor de tempo real não receberia nenhum talão — mais vale dizê-lo e
-  // parar do que ficar a correr sem imprimir nada.
-  if (!REALTIME_ENABLED) {
-    fatal(
-      "realtimeUrl/realtimeKey não configurados.",
-      "Sem tempo real o agente não recebe nenhum talão. Preencha-os no config.json."
-    );
+  const realtimeChanged =
+    CHANNEL !== before.channel || REALTIME_URL !== before.url || REALTIME_KEY !== before.key;
+  if (!realtimeChanged) return;
+
+  // Recomeçar do zero: uma configuração acabada de corrigir não deve esperar
+  // pelos 60 s do backoff da configuração anterior.
+  reconnectAttempts = 0;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (ws) {
+    ws.close(); // o onClose agenda a reconexão com os valores novos
   } else {
-    console.log(`[qomanda-agent] Tempo real: ${REALTIME_URL}`);
-    connectRealtime();
-    // Recolha inicial: pode haver trabalho em fila desde a última paragem.
-    drainJobs("arranque");
+    startRealtime();
   }
 }
+
+function startRealtime() {
+  if (!isReady()) {
+    pushLog("warn", `Configuração incompleta: ${configIssues().join(" ")}`);
+    return;
+  }
+  connectRealtime();
+  // Recolha inicial: pode haver trabalho em fila desde a última paragem.
+  drainJobs("arranque");
+}
+
+// ── Impressoras instaladas no Windows ───────────────────────────────────
+// `Get-Printer` só existe a partir do Windows 8 — neste agente, cujo motivo
+// de existir é o Windows 7, tem de ser WMI, que funciona no PowerShell 2.0.
+function listWindowsPrinters() {
+  return new Promise((resolvePrinters) => {
+    if (process.platform !== "win32") {
+      resolvePrinters([]);
+      return;
+    }
+    execFile(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "Get-WmiObject -Class Win32_Printer | ForEach-Object { $_.Name }",
+      ],
+      { timeout: 15000, windowsHide: true },
+      (err, stdout) => {
+        if (err) {
+          resolvePrinters([]);
+          return;
+        }
+        const names = String(stdout)
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0);
+        resolvePrinters(names);
+      }
+    );
+  });
+}
+
+// Talão de teste ESC/POS: inicializa, centra, imprime, avança e corta.
+function testTicket() {
+  const ESC = 0x1b;
+  const GS = 0x1d;
+  const head = Buffer.from([ESC, 0x40, ESC, 0x61, 0x01]);
+  const body = Buffer.from("QOMANDA\nTeste de impressao\nOK\n\n\n", "latin1");
+  const cut = Buffer.from([GS, 0x56, 0x00]);
+  return Buffer.concat([head, body, cut]);
+}
+
+// ── Interface web local ─────────────────────────────────────────────────
+// O agente Tauri tem formulário, teste de impressora e registo em direto; no
+// Windows 7 havia só uma consola preta e um JSON para editar à mão. Servimos
+// a mesma coisa a partir do próprio agente: o módulo `http` já cá está, por
+// isso não custa nenhuma dependência e continua a caber num único .exe.
+//
+// Só escuta em 127.0.0.1 — a página mostra o token do agente, e expô-lo à
+// rede do restaurante seria entregá-lo a qualquer dispositivo do Wi-Fi. A
+// chave de sessão na URL impede ainda que uma página aberta noutro separador
+// do navegador consiga falar com o agente.
+const UI_PORT = Number(config.uiPort) || 7654;
+const UI_KEY = randomBytes(16).toString("hex");
+
+function sendJson(res, status, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  res.end(body);
+}
+
+function readBody(req) {
+  return new Promise((resolveBody, rejectBody) => {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+      if (raw.length > 1e6) {
+        rejectBody(new Error("Pedido demasiado grande"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      try {
+        resolveBody(raw ? JSON.parse(raw) : {});
+      } catch (err) {
+        rejectBody(new Error("JSON inválido"));
+      }
+    });
+    req.on("error", rejectBody);
+  });
+}
+
+function currentState() {
+  return {
+    config: {
+      serverUrl: config.serverUrl || DEFAULT_SERVER_URL,
+      token: config.token || "",
+      realtimeUrl: config.realtimeUrl || DEFAULT_REALTIME_URL,
+      realtimeKey: config.realtimeKey || DEFAULT_REALTIME_KEY,
+      printers: PRINTERS,
+    },
+    status: {
+      ready: isReady(),
+      issues: configIssues(),
+      realtimeConnected: REALTIME_STATE.connected,
+      lastError: REALTIME_STATE.lastError,
+      lastActivityAt: REALTIME_STATE.lastActivityAt,
+    },
+    logs: logs,
+  };
+}
+
+async function handleApi(req, res, pathname) {
+  if (pathname === "/api/state" && req.method === "GET") {
+    sendJson(res, 200, currentState());
+    return;
+  }
+
+  if (pathname === "/api/printers" && req.method === "GET") {
+    const printers = await listWindowsPrinters();
+    sendJson(res, 200, { printers });
+    return;
+  }
+
+  if (pathname === "/api/config" && req.method === "POST") {
+    const next = await readBody(req);
+    reloadConfig(next);
+    sendJson(res, 200, currentState());
+    return;
+  }
+
+  if (pathname === "/api/test" && req.method === "POST") {
+    const printer = await readBody(req);
+    if (!printer || (!printer.host && !printer.printerName)) {
+      sendJson(res, 400, { error: "Indique o IP ou o nome da impressora." });
+      return;
+    }
+    try {
+      await printRaw(printer, testTicket());
+      pushLog("success", `Talão de teste enviado para ${printerLabel(printer)}`);
+      sendJson(res, 200, { ok: true });
+    } catch (err) {
+      pushLog("error", `Falha no teste de impressão: ${err.message}`);
+      sendJson(res, 200, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  sendJson(res, 404, { error: "Não encontrado" });
+}
+
+function startWebUi() {
+  const server = http.createServer((req, res) => {
+    let parsed;
+    try {
+      parsed = new URL(req.url, `http://127.0.0.1:${UI_PORT}`);
+    } catch (err) {
+      res.writeHead(400).end();
+      return;
+    }
+    const pathname = parsed.pathname;
+
+    if (pathname === "/" || pathname === "/index.html") {
+      // A chave vai na URL; a página guarda-a e usa-a nos pedidos seguintes.
+      if (parsed.searchParams.get("k") !== UI_KEY) {
+        res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Abra a interface pelo endereço que o agente mostrou na consola.");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(renderPage());
+      return;
+    }
+
+    if (pathname.indexOf("/api/") === 0) {
+      if (parsed.searchParams.get("k") !== UI_KEY) {
+        sendJson(res, 403, { error: "Chave de sessão inválida." });
+        return;
+      }
+      handleApi(req, res, pathname).catch((err) => {
+        sendJson(res, 500, { error: err.message });
+      });
+      return;
+    }
+
+    res.writeHead(404).end();
+  });
+
+  server.on("error", (err) => {
+    pushLog("error", `Não foi possível abrir a interface na porta ${UI_PORT}: ${err.message}`);
+    pushLog("warn", 'Defina outra porta com "uiPort" no config.json.');
+  });
+
+  server.listen(UI_PORT, "127.0.0.1", () => {
+    const url = `http://127.0.0.1:${UI_PORT}/?k=${UI_KEY}`;
+    pushLog("info", `Interface: ${url}`);
+    openBrowser(url);
+  });
+}
+
+// A página é servida ao Internet Explorer 11 — o navegador por omissão de um
+// Windows 7 acabado de instalar. Daí ES5 puro no cliente: nada de `fetch`,
+// `const`, arrow functions ou template literals, que rebentariam lá sem
+// qualquer mensagem útil para o restaurante.
+function renderPage() {
+  return `<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>Qomanda Print Agent</title>
+<style>
+  body { font-family: Segoe UI, Tahoma, sans-serif; background: #f1f5f9; color: #0f172a;
+         margin: 0; padding: 24px; font-size: 14px; }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #64748b; margin: 0 0 20px; }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
+          padding: 16px; margin-bottom: 16px; }
+  .status { display: flex; align-items: center; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 10px; background: #94a3b8; }
+  .dot.ok { background: #16a34a; }
+  .dot.err { background: #dc2626; }
+  .status-text { font-weight: 600; }
+  .status-meta { color: #64748b; font-size: 12.5px; }
+  label { display: block; font-size: 12.5px; color: #475569; margin: 12px 0 4px; }
+  input[type=text], input[type=password], select {
+    width: 100%; padding: 7px 9px; border: 1px solid #cbd5e1; border-radius: 5px;
+    font-size: 14px; box-sizing: border-box; font-family: inherit; }
+  .station { border-top: 1px solid #e2e8f0; padding-top: 12px; margin-top: 12px; }
+  .station-head { font-weight: 600; }
+  .row { margin-top: 6px; }
+  .row > * { vertical-align: middle; }
+  button { background: #1e293b; color: #fff; border: 0; border-radius: 5px;
+           padding: 8px 14px; font-size: 13px; cursor: pointer; font-family: inherit; }
+  button.sec { background: #e2e8f0; color: #0f172a; }
+  button[disabled] { opacity: .5; cursor: default; }
+  .note { font-size: 12.5px; padding: 6px 0; }
+  .note.ok { color: #16a34a; }
+  .note.err { color: #dc2626; }
+  .issues { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c;
+            border-radius: 6px; padding: 10px; margin-bottom: 12px; font-size: 13px; }
+  #logs { height: 240px; overflow-y: auto; background: #0f172a; color: #e2e8f0;
+          border-radius: 6px; padding: 10px; font-family: Consolas, monospace; font-size: 12px; }
+  #logs div { padding: 1px 0; white-space: pre-wrap; }
+  .l-error { color: #fca5a5; } .l-warn { color: #fcd34d; } .l-success { color: #86efac; }
+  .l-time { color: #64748b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Qomanda Print Agent</h1>
+  <p class="sub">Impressão automática dos talões nas impressoras do restaurante.</p>
+
+  <div class="card status">
+    <span class="dot" id="dot"></span>
+    <div>
+      <div class="status-text" id="statusText">A carregar...</div>
+      <div class="status-meta" id="statusMeta"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div id="issues"></div>
+    <label>Token do agente <span style="color:#94a3b8">(Dashboard &rarr; Equipa &rarr; Impressão)</span></label>
+    <input type="text" id="token" autocomplete="off">
+
+    <div id="stations"></div>
+
+    <div class="row" style="margin-top:16px">
+      <button type="button" id="save">Guardar</button>
+      <span class="note" id="saveNote"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:600;margin-bottom:8px">Atividade</div>
+    <div id="logs"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var KEY = (location.search.match(/[?&]k=([^&]+)/) || [])[1] || "";
+  var STATIONS = [
+    { id: "kitchen", label: "Cozinha" },
+    { id: "bar", label: "Bar" },
+    { id: "payment", label: "Pagamento" }
+  ];
+  var windowsPrinters = [];
+  var state = null;
+
+  function api(method, path, body, cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open(method, "/api/" + path + "?k=" + KEY, true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      var data = null;
+      try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
+      cb(xhr.status, data);
+    };
+    xhr.send(body ? JSON.stringify(body) : null);
+  }
+
+  function el(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function stationHtml(st, printer) {
+    var kind = printer && printer.kind === "usb" ? "usb" : "network";
+    var host = printer && printer.host ? printer.host : "";
+    var port = printer && printer.port ? printer.port : 9100;
+    var name = printer && printer.printerName ? printer.printerName : "";
+    var on = printer ? " checked" : "";
+    var h = '<div class="station">';
+    h += '<label class="station-head"><input type="checkbox" data-on="' + st.id + '"' + on + '> ' + st.label + '</label>';
+    h += '<div data-body="' + st.id + '"' + (printer ? "" : ' style="display:none"') + '>';
+    h += '<div class="row">';
+    h += '<label style="display:inline;margin-right:12px"><input type="radio" name="k-' + st.id + '" data-kind="' + st.id + '" value="network"' + (kind === "network" ? " checked" : "") + '> Rede (IP)</label>';
+    h += '<label style="display:inline"><input type="radio" name="k-' + st.id + '" data-kind="' + st.id + '" value="usb"' + (kind === "usb" ? " checked" : "") + '> USB / Local</label>';
+    h += "</div>";
+    h += '<div class="row" data-net="' + st.id + '"' + (kind === "network" ? "" : ' style="display:none"') + '>';
+    h += '<input type="text" data-host="' + st.id + '" value="' + esc(host) + '" placeholder="192.168.1.50" style="width:200px;display:inline-block">';
+    h += ' <input type="text" data-port="' + st.id + '" value="' + esc(port) + '" style="width:80px;display:inline-block">';
+    h += "</div>";
+    h += '<div class="row" data-usb="' + st.id + '"' + (kind === "usb" ? "" : ' style="display:none"') + '>';
+    h += printerSelect(st.id, name);
+    h += "</div>";
+    h += '<div class="row"><button type="button" class="sec" data-test="' + st.id + '">Testar</button> <span class="note" data-note="' + st.id + '"></span></div>';
+    h += "</div></div>";
+    return h;
+  }
+
+  function printerSelect(id, current) {
+    if (!windowsPrinters.length) {
+      return '<input type="text" data-name="' + id + '" value="' + esc(current) +
+        '" placeholder="Nome exato da impressora no Windows">';
+    }
+    var h = '<select data-name="' + id + '"><option value="">Selecione...</option>';
+    var found = false;
+    for (var i = 0; i < windowsPrinters.length; i++) {
+      var p = windowsPrinters[i];
+      if (p === current) found = true;
+      h += '<option value="' + esc(p) + '"' + (p === current ? " selected" : "") + ">" + esc(p) + "</option>";
+    }
+    if (current && !found) h += '<option value="' + esc(current) + '" selected>' + esc(current) + "</option>";
+    return h + "</select>";
+  }
+
+  function renderStations() {
+    var h = "";
+    for (var i = 0; i < STATIONS.length; i++) {
+      h += stationHtml(STATIONS[i], state.config.printers[STATIONS[i].id]);
+    }
+    el("stations").innerHTML = h;
+    bindStations();
+  }
+
+  function bindStations() {
+    for (var i = 0; i < STATIONS.length; i++) {
+      (function (id) {
+        var on = document.querySelector('[data-on="' + id + '"]');
+        on.onclick = function () {
+          document.querySelector('[data-body="' + id + '"]').style.display = on.checked ? "" : "none";
+        };
+        var radios = document.querySelectorAll('[data-kind="' + id + '"]');
+        for (var r = 0; r < radios.length; r++) {
+          radios[r].onclick = function () {
+            var usb = this.value === "usb";
+            document.querySelector('[data-net="' + id + '"]').style.display = usb ? "none" : "";
+            document.querySelector('[data-usb="' + id + '"]').style.display = usb ? "" : "none";
+          };
+        }
+        document.querySelector('[data-test="' + id + '"]').onclick = function () {
+          var note = document.querySelector('[data-note="' + id + '"]');
+          note.className = "note";
+          note.innerHTML = "A testar...";
+          api("POST", "test", readStation(id), function (status, data) {
+            if (data && data.ok) {
+              note.className = "note ok";
+              note.innerHTML = "Talão enviado.";
+            } else {
+              note.className = "note err";
+              note.innerHTML = esc((data && data.error) || "Falhou.");
+            }
+          });
+        };
+      })(STATIONS[i].id);
+    }
+  }
+
+  function readStation(id) {
+    var kindEl = document.querySelector('[data-kind="' + id + '"]:checked');
+    var kind = kindEl ? kindEl.value : "network";
+    var nameEl = document.querySelector('[data-name="' + id + '"]');
+    return {
+      kind: kind,
+      host: kind === "network" ? document.querySelector('[data-host="' + id + '"]').value : "",
+      port: parseInt(document.querySelector('[data-port="' + id + '"]').value, 10) || 9100,
+      printerName: kind === "usb" && nameEl ? nameEl.value : ""
+    };
+  }
+
+  function renderStatus() {
+    var s = state.status;
+    var dot = el("dot"), text = el("statusText"), meta = el("statusMeta");
+    if (s.realtimeConnected) {
+      dot.className = "dot ok";
+      text.innerHTML = "Tempo real ligado";
+      meta.innerHTML = "À espera de trabalhos — sem consultas ao servidor.";
+    } else if (!s.ready) {
+      dot.className = "dot";
+      text.innerHTML = "Configuração incompleta";
+      meta.innerHTML = "Preencha os campos abaixo para começar a imprimir.";
+    } else {
+      dot.className = "dot err";
+      text.innerHTML = "Sem ligação ao tempo real";
+      meta.innerHTML = esc(s.lastError || "A reconectar...");
+    }
+    el("issues").innerHTML = s.issues.length
+      ? '<div class="issues">' + esc(s.issues.join(" ")) + "</div>"
+      : "";
+  }
+
+  function renderLogs() {
+    var box = el("logs");
+    var stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+    var h = "";
+    for (var i = 0; i < state.logs.length; i++) {
+      var entry = state.logs[i];
+      var t = entry.ts.substring(11, 19);
+      h += '<div class="l-' + entry.level + '"><span class="l-time">' + t + "</span>  " + esc(entry.message) + "</div>";
+    }
+    box.innerHTML = h;
+    if (stick) box.scrollTop = box.scrollHeight;
+  }
+
+  function refresh(first) {
+    api("GET", "state", null, function (status, data) {
+      if (!data) return;
+      var firstLoad = !state;
+      state = data;
+      renderStatus();
+      renderLogs();
+      if (firstLoad) {
+        el("token").value = state.config.token || "";
+        renderStations();
+      }
+    });
+  }
+
+  el("save").onclick = function () {
+    var note = el("saveNote");
+    var printers = {};
+    for (var i = 0; i < STATIONS.length; i++) {
+      var id = STATIONS[i].id;
+      if (document.querySelector('[data-on="' + id + '"]').checked) printers[id] = readStation(id);
+    }
+    var next = {
+      serverUrl: state.config.serverUrl,
+      token: el("token").value,
+      realtimeUrl: state.config.realtimeUrl,
+      realtimeKey: state.config.realtimeKey,
+      printers: printers
+    };
+    el("save").disabled = true;
+    note.className = "note";
+    note.innerHTML = "A guardar...";
+    api("POST", "config", next, function (status, data) {
+      el("save").disabled = false;
+      if (status === 200 && data) {
+        state = data;
+        note.className = "note ok";
+        note.innerHTML = "Guardado.";
+        renderStatus();
+      } else {
+        note.className = "note err";
+        note.innerHTML = esc((data && data.error) || "Falha ao guardar.");
+      }
+    });
+  };
+
+  // As impressoras do Windows primeiro: o formulário precisa delas para
+  // mostrar a lista em vez de um campo de texto onde se erra o nome.
+  api("GET", "printers", null, function (status, data) {
+    if (data && data.printers) windowsPrinters = data.printers;
+    refresh(true);
+    setInterval(refresh, 2000);
+  });
+})();
+</script>
+</body>
+</html>`;
+}
+
+// Instalado como serviço (NSSM) não há sessão de ambiente de trabalho onde
+// abrir seja útil, e nos testes é só uma janela a saltar. A interface
+// continua lá — só não se abre sozinha.
+function shouldOpenBrowser() {
+  if (process.env.QOMANDA_NO_BROWSER) return false;
+  return config.openBrowser !== false;
+}
+
+function openBrowser(url) {
+  if (process.platform !== "win32" || !shouldOpenBrowser()) return;
+  // O "" é o título da janela: sem ele, o `start` interpreta a URL entre aspas
+  // como título e não abre nada.
+  execFile("cmd.exe", ["/c", "start", "", url], { windowsHide: true }, () => {});
+}
+
+// ── Arranque ────────────────────────────────────────────────────────────
+pushLog("info", "Qomanda Print Agent iniciado.");
+pushLog("info", `Servidor: ${SERVER_URL}`);
+if (REALTIME_ENABLED) pushLog("info", `Tempo real: ${REALTIME_URL}`);
+
+startWebUi();
+startRealtime();
