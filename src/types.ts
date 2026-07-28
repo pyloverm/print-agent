@@ -19,8 +19,6 @@ export interface AgentConfig {
   /** Servidor de tempo real (Soketi) e a sua chave pública. Vazios = poll permanente. */
   realtimeUrl: string;
   realtimeKey: string;
-  /** Rede de segurança, só usada quando o WebSocket está em baixo. */
-  fallbackPollMs: number;
   printers: PrintersConfig;
 }
 
@@ -34,7 +32,6 @@ export interface AgentStatus {
   running: boolean;
   realtimeConfigured: boolean;
   realtimeConnected: boolean;
-  fallbackPolling: boolean;
   lastError: string | null;
   /** Último contacto bem-sucedido com o servidor. */
   lastActivityAt: string | null;

@@ -22,7 +22,7 @@ use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -33,6 +33,19 @@ const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// "há trabalho" — o talão vem depois pela API autenticada.
 const WAKE_EVENT: &str = "job-queued";
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
+/// `activity_timeout` por omissão do protocolo Pusher, usado até o servidor
+/// anunciar o seu no `connection_established`.
+const DEFAULT_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(120);
+/// Pingamos a 75% da janela anunciada: uma fração em vez de uma margem fixa,
+/// para funcionar tanto com os 120 s do Soketi (ping a 90 s) como com um valor
+/// curto — uma margem fixa de 10 s daria um período negativo se o servidor
+/// anunciasse menos do que isso.
+const KEEPALIVE_FRACTION: f32 = 0.75;
+const MIN_KEEPALIVE: Duration = Duration::from_secs(1);
+
+fn keepalive_period(activity_timeout: Duration) -> Duration {
+    activity_timeout.mul_f32(KEEPALIVE_FRACTION).max(MIN_KEEPALIVE)
+}
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Deserialize)]
@@ -123,6 +136,20 @@ fn http_base(server_url: &str) -> String {
     } else {
         format!("https://{trimmed}")
     }
+}
+
+/// O `data` do `connection_established` vem, no protocolo Pusher, como uma
+/// STRING que contém JSON — mas alguns servidores mandam o objeto diretamente.
+/// Aceitamos as duas formas; se nenhuma servir, fica o valor por omissão.
+fn activity_timeout(data: &serde_json::Value) -> Option<Duration> {
+    let seconds = match data {
+        serde_json::Value::String(raw) => serde_json::from_str::<serde_json::Value>(raw)
+            .ok()?
+            .get("activity_timeout")?
+            .as_u64()?,
+        other => other.get("activity_timeout")?.as_u64()?,
+    };
+    Some(Duration::from_secs(seconds))
 }
 
 fn printer_label(printer: &PrinterConfig) -> String {
@@ -325,10 +352,20 @@ async fn realtime_session(
     channel: &str,
     tx: &mpsc::Sender<String>,
 ) -> Result<bool, String> {
+    let r_url = if config.realtime_url.trim().is_empty() {
+        crate::config::DEFAULT_REALTIME_URL
+    } else {
+        &config.realtime_url
+    };
+    let r_key = if config.realtime_key.trim().is_empty() {
+        crate::config::DEFAULT_REALTIME_KEY
+    } else {
+        &config.realtime_key
+    };
     let url = format!(
         "{}/app/{}?protocol=7&client={CLIENT_NAME}&version={CLIENT_VERSION}",
-        websocket_base(&config.realtime_url),
-        config.realtime_key
+        websocket_base(r_url),
+        r_key
     );
 
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
@@ -336,9 +373,32 @@ async fn realtime_session(
         .map_err(|e| format!("falha ao ligar ao servidor de tempo real: {e}"))?;
 
     let mut established = false;
+    // Keepalive. No protocolo Pusher é o CLIENTE que tem de dar sinal de vida:
+    // o servidor fecha a ligação de um cliente calado há mais de
+    // `activity_timeout` segundos (120 por omissão). Sem isto a ligação caía de
+    // 2 em 2 minutos e cada reconexão fazia uma recolha — ou seja, uma consulta
+    // à base de dados a cada 2 minutos, que é precisamente o que o tempo real
+    // veio evitar. O valor real vem no `connection_established`.
+    let initial = keepalive_period(DEFAULT_ACTIVITY_TIMEOUT);
+    let mut keepalive =
+        tokio::time::interval_at(tokio::time::Instant::now() + initial, initial);
 
-    while let Some(frame) = ws.next().await {
-        let message = frame.map_err(|e| format!("ligação de tempo real interrompida: {e}"))?;
+    loop {
+        let message = tokio::select! {
+            frame = ws.next() => match frame {
+                Some(frame) => frame
+                    .map_err(|e| format!("ligação de tempo real interrompida: {e}"))?,
+                None => break,
+            },
+            _ = keepalive.tick() => {
+                let ping = serde_json::json!({ "event": "pusher:ping", "data": {} });
+                ws.send(Message::Text(ping.to_string()))
+                    .await
+                    .map_err(|e| format!("falha a enviar o keepalive: {e}"))?;
+                continue;
+            }
+        };
+
         let text = match message {
             Message::Text(text) => text,
             Message::Binary(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
@@ -354,6 +414,13 @@ async fn realtime_session(
 
         match envelope.event.as_str() {
             "pusher:connection_established" => {
+                // O servidor anuncia aqui de quanto em quanto tempo espera ver
+                // sinal de vida. Pingamos com uma margem antes disso.
+                if let Some(timeout) = activity_timeout(&envelope.data) {
+                    let period = keepalive_period(timeout);
+                    keepalive =
+                        tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+                }
                 // Canal público: nenhuma autorização necessária — o segredo é o
                 // próprio nome do canal, derivado do token.
                 let subscribe = serde_json::json!({
@@ -373,7 +440,6 @@ async fn realtime_session(
                 );
                 update_status(app, |s| {
                     s.realtime_connected = true;
-                    s.fallback_polling = false;
                     s.last_error = None;
                 });
                 // Apanhar o que possa ter sido enfileirado enquanto estávamos
@@ -386,6 +452,8 @@ async fn realtime_session(
                     .await
                     .map_err(|e| format!("falha a responder ao ping: {e}"))?;
             }
+            // Resposta ao nosso keepalive: nada a fazer, mas não é lixo.
+            "pusher:pong" => {}
             "pusher:error" => {
                 log(
                     app,
@@ -401,36 +469,16 @@ async fn realtime_session(
     Ok(established)
 }
 
-/// Espera `backoff` antes da próxima tentativa de ligação, mantendo entretanto
-/// o poll de segurança na sua cadência. O relógio do poll é contínuo ao longo
-/// de toda a avaria — não recomeça a cada tentativa, senão uma sequência de
-/// reconexões curtas multiplicava as consultas.
-async fn wait_with_fallback_poll(
-    tx: &mpsc::Sender<String>,
-    backoff: Duration,
-    interval: Duration,
-    last_poll: &mut Instant,
-) {
-    let deadline = Instant::now() + backoff;
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return;
-        }
-        let until_poll = interval.saturating_sub(now.duration_since(*last_poll));
-        tokio::time::sleep(until_poll.min(deadline - now)).await;
-        if last_poll.elapsed() >= interval {
-            *last_poll = Instant::now();
-            trigger(tx, "poll de segurança");
-        }
-    }
-}
-
 // ── Arranque ────────────────────────────────────────────────────────────────
 
 pub fn spawn(app: AppHandle, config: AgentConfig) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
-        let server_url = http_base(&config.server_url);
+        let s_url = if config.server_url.trim().is_empty() {
+            crate::config::DEFAULT_SERVER_URL
+        } else {
+            &config.server_url
+        };
+        let server_url = http_base(s_url);
         let client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
@@ -456,13 +504,11 @@ pub fn spawn(app: AppHandle, config: AgentConfig) -> tauri::async_runtime::JoinH
         });
 
         let realtime = config.realtime_enabled();
-        let interval = config.fallback_poll_interval();
 
         update_status(&app, |s| {
             s.running = true;
             s.realtime_configured = realtime;
             s.realtime_connected = false;
-            s.fallback_polling = !realtime;
             s.last_error = None;
         });
         log(&app, "info", "Qomanda Print Agent iniciado.".into());
@@ -470,26 +516,19 @@ pub fn spawn(app: AppHandle, config: AgentConfig) -> tauri::async_runtime::JoinH
         // Recolha inicial: pode haver trabalho em fila desde a última paragem.
         trigger(&tx, "arranque");
 
+        // Sem poll de segurança, o tempo real é o ÚNICO caminho até à fila. Um
+        // agente sem servidor de tempo real não imprimiria nada — mais vale
+        // dizê-lo e parar do que ficar com um estado "a correr" que engana.
         if !realtime {
-            log(
-                &app,
-                "warn",
-                "Servidor de tempo real não configurado — o agente vai funcionar apenas por poll, \
-                 o que mantém a base de dados permanentemente acordada."
-                    .into(),
-            );
-            log(
-                &app,
-                "warn",
-                format!(
-                    "Poll de segurança ATIVO (tempo real não configurado) — a cada {}s.",
-                    interval.as_secs()
-                ),
-            );
-            loop {
-                tokio::time::sleep(interval).await;
-                trigger(&tx, "poll de segurança");
-            }
+            let msg = "Servidor de tempo real não configurado — sem ele o agente não recebe \
+                       nenhum talão. Preencha-o na configuração."
+                .to_string();
+            log(&app, "error", msg.clone());
+            update_status(&app, |s| {
+                s.running = false;
+                s.last_error = Some(msg);
+            });
+            return;
         }
 
         log(
@@ -500,7 +539,6 @@ pub fn spawn(app: AppHandle, config: AgentConfig) -> tauri::async_runtime::JoinH
 
         let channel = wake_channel(&config.token);
         let mut attempts: u32 = 0;
-        let mut last_poll = Instant::now();
 
         loop {
             let why = match realtime_session(&app, &config, &channel, &tx).await {
@@ -514,25 +552,26 @@ pub fn spawn(app: AppHandle, config: AgentConfig) -> tauri::async_runtime::JoinH
 
             update_status(&app, |s| {
                 s.realtime_connected = false;
-                s.fallback_polling = true;
                 s.last_error = Some(why.clone());
             });
-            // Sem tempo real, a fila só é vista pelo poll: ativá-lo é o que
-            // evita perder um ticket de cozinha durante a avaria.
-            log(
-                &app,
-                "warn",
-                format!(
-                    "Poll de segurança ATIVO ({why}) — a cada {}s.",
-                    interval.as_secs()
-                ),
-            );
 
             attempts = attempts.saturating_add(1);
             // Backoff exponencial travado a 60 s.
             let backoff = Duration::from_millis(2000u64 << attempts.saturating_sub(1).min(5))
                 .min(MAX_RECONNECT_DELAY);
-            wait_with_fallback_poll(&tx, backoff, interval, &mut last_poll).await;
+            // Enquanto isto durar não sai nenhum talão: o tempo real é o único
+            // caminho até à fila. A recolha feita ao subscrever recupera tudo o
+            // que se acumulou entretanto, e o servidor reentrega o que nunca foi
+            // confirmado — os talões atrasam-se, não se perdem.
+            log(
+                &app,
+                "warn",
+                format!(
+                    "Tempo real em baixo ({why}) — nova tentativa em {}s.",
+                    backoff.as_secs()
+                ),
+            );
+            tokio::time::sleep(backoff).await;
         }
     })
 }
@@ -559,6 +598,36 @@ mod tests {
         assert_eq!(http_base("https://new.qomanda.eu/"), "https://new.qomanda.eu");
         assert_eq!(http_base("http://127.0.0.1:8099"), "http://127.0.0.1:8099");
         assert_eq!(http_base("  new.qomanda.eu  "), "https://new.qomanda.eu");
+    }
+
+    #[test]
+    fn le_o_activity_timeout_anunciado_pelo_servidor() {
+        // Forma do protocolo: `data` é uma string que contém JSON.
+        let como_string = serde_json::json!(
+            r#"{"socket_id":"1.1","activity_timeout":120}"#
+        );
+        assert_eq!(activity_timeout(&como_string), Some(Duration::from_secs(120)));
+
+        // Alguns servidores mandam o objeto diretamente.
+        let como_objeto = serde_json::json!({ "socket_id": "1.1", "activity_timeout": 60 });
+        assert_eq!(activity_timeout(&como_objeto), Some(Duration::from_secs(60)));
+
+        // Sem o campo, fica o valor por omissão.
+        assert_eq!(activity_timeout(&serde_json::json!({ "socket_id": "1.1" })), None);
+        assert_eq!(activity_timeout(&serde_json::json!("lixo")), None);
+    }
+
+    #[test]
+    fn o_keepalive_fica_dentro_da_janela_do_servidor() {
+        // O caso real: Soketi com 120 s fechava-nos a cada 2 minutos.
+        assert_eq!(
+            keepalive_period(Duration::from_secs(120)),
+            Duration::from_secs(90)
+        );
+        // Uma janela curta continua a dar um período utilizável — era aqui que
+        // uma margem fixa de 10 s produzia um valor negativo.
+        assert_eq!(keepalive_period(Duration::from_secs(4)), Duration::from_secs(3));
+        assert!(keepalive_period(Duration::from_secs(0)) >= MIN_KEEPALIVE);
     }
 
     #[test]

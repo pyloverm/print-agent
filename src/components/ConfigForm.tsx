@@ -34,13 +34,13 @@ const STATION_ICON: Record<'kitchen' | 'bar' | 'payment', string> = {
   payment: '🧾',
 };
 
+const DEFAULT_SERVER_URL = 'https://new.qomanda.eu';
+const DEFAULT_REALTIME_URL = 'https://realtime.qomanda.eu';
+const DEFAULT_REALTIME_KEY = 'a0g4w5Gk3ujFL9wurqHyCdEOmf5fQdLsFLHtHw139pBmZFojPrXQSIWx9Zd6BtxAl2fywhXq379ZG0hSF7jw';
+
 export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
-  const [serverUrl, setServerUrl] = useState(config.serverUrl);
   const [token, setToken] = useState(config.token);
   const [showToken, setShowToken] = useState(false);
-  const [realtimeUrl, setRealtimeUrl] = useState(config.realtimeUrl);
-  const [realtimeKey, setRealtimeKey] = useState(config.realtimeKey);
-  const [fallbackPollMs, setFallbackPollMs] = useState(String(config.fallbackPollMs));
   const [kitchen, setKitchen] = useState<StationState>(toStationState(config.printers.kitchen));
   const [bar, setBar] = useState<StationState>(toStationState(config.printers.bar));
   const [payment, setPayment] = useState<StationState>(toStationState(config.printers.payment));
@@ -78,11 +78,10 @@ export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
     setSaving(true);
     try {
       await onSave({
-        serverUrl: serverUrl.trim(),
+        serverUrl: DEFAULT_SERVER_URL,
         token: token.trim(),
-        realtimeUrl: realtimeUrl.trim(),
-        realtimeKey: realtimeKey.trim(),
-        fallbackPollMs: parseInt(fallbackPollMs, 10) || 60000,
+        realtimeUrl: DEFAULT_REALTIME_URL,
+        realtimeKey: DEFAULT_REALTIME_KEY,
         printers: {
           kitchen: stationToPrinter(kitchen),
           bar: stationToPrinter(bar),
@@ -211,17 +210,6 @@ export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
       <h2>Configuração</h2>
 
       <label className="field">
-        <span>Endereço do servidor Qomanda</span>
-        <input
-          type="text"
-          placeholder="https://o-seu-dominio-qomanda.com"
-          value={serverUrl}
-          onChange={(e) => setServerUrl(e.target.value)}
-          required
-        />
-      </label>
-
-      <label className="field">
         <span>Token do agente</span>
         <div className="field__with-action">
           <input
@@ -235,44 +223,6 @@ export default function ConfigForm({ config, onSave, onTestPrinter }: Props) {
             {showToken ? 'Ocultar' : 'Mostrar'}
           </button>
         </div>
-      </label>
-
-      <div className="field">
-        <span>Tempo real</span>
-        <p className="field__hint">
-          O agente fica à espera que o servidor o avise, em vez de perguntar de tempos a tempos. Sem
-          estes dois campos imprime na mesma, mas em modo degradado — ver o README.
-        </p>
-        <input
-          type="text"
-          placeholder="wss://realtime.o-seu-dominio-qomanda.com"
-          value={realtimeUrl}
-          onChange={(e) => setRealtimeUrl(e.target.value)}
-        />
-        <input
-          type="text"
-          placeholder="Chave pública do servidor de tempo real"
-          value={realtimeKey}
-          onChange={(e) => setRealtimeKey(e.target.value)}
-        />
-        {!(realtimeUrl.trim() && realtimeKey.trim()) && (
-          <div className="form-warning">
-            Por preencher: o agente vai consultar o servidor de {Math.round((parseInt(fallbackPollMs, 10) || 60000) / 1000)} em{' '}
-            {Math.round((parseInt(fallbackPollMs, 10) || 60000) / 1000)} segundos, permanentemente.
-          </div>
-        )}
-      </div>
-
-      <label className="field field--narrow">
-        <span>Poll de segurança (ms)</span>
-        <input
-          type="number"
-          min={15000}
-          step={1000}
-          value={fallbackPollMs}
-          onChange={(e) => setFallbackPollMs(e.target.value)}
-        />
-        <span className="field__hint">Só usado enquanto o tempo real estiver em baixo. Mínimo 15 s.</span>
       </label>
 
       <div className="field">

@@ -98,8 +98,8 @@ Ou registe como serviço com [NSSM](https://nssm.cc/): `nssm install QomandaPrin
      *Testar* imprime um talão de teste.
 3. Ligue **Iniciar automaticamente com o Windows**.
 
-A barra de estado no topo mostra qual dos modos está ativo: *Tempo real
-ligado* (verde) ou *Poll de segurança ativo* (laranja).
+A barra de estado no topo diz se os talões estão a chegar: *Tempo real ligado*
+(verde) ou *Sem ligação ao tempo real* (vermelho — nada imprime).
 
 ## Como funciona
 
@@ -122,13 +122,15 @@ Restante funcionamento:
 
 - O aviso do servidor não traz dados: é só "há trabalho". O agente vai depois
   buscar o talão pela API autenticada.
-- **Rede de segurança**: se o WebSocket cair, o agente passa a consultar de 60
-  em 60 segundos (configurável, mínimo 15 s) até voltar a ligar-se, para não
-  perder nenhum talão durante a avaria. Volta ao silêncio assim que a ligação
-  regressa.
-- Se o tempo real não estiver configurado, o agente fica permanentemente nessa
-  rede de segurança. Imprime bem, mas mantém a base de dados acordada —
-  configure-o assim que possível.
+- **Não há poll nenhum, nem sequer de recurso.** O tempo real é o único caminho
+  até à fila. Se o WebSocket cair, o agente reconecta-se com backoff
+  exponencial (2 s, 4 s, ... até 60 s) e, enquanto isso durar, **não sai nenhum
+  talão**. Não se perde nada: ao voltar a subscrever, o agente recolhe tudo o
+  que se acumulou, e um talão reclamado mas nunca confirmado é reentregue pelo
+  servidor. Os talões atrasam-se, não desaparecem.
+- Sem `realtimeUrl`/`realtimeKey` o agente **recusa-se a arrancar**, em vez de
+  ficar a correr sem receber nada. A app Tauri mostra-o a vermelho na barra de
+  estado; o `agent.cjs` sai com uma mensagem.
 - Se o posto *Pagamento* não estiver configurado, os recibos saem na impressora
   do bar (ou, na falta desta, na da cozinha), com um aviso nos logs.
 - O `agent.cjs` traz um cliente WebSocket próprio, escrito à mão sobre `net`/
@@ -169,8 +171,8 @@ Os instaladores ficam em
 | Sintoma | Causa provável |
 |---|---|
 | `Token inválido` | Token regenerado no dashboard — atualize a configuração |
-| `Poll de segurança ATIVO` sempre nos logs | Tempo real mal configurado, ou a firewall do restaurante bloqueia a saída em 443 |
-| Talões demoram ~1 min a sair | O mesmo: o tempo real está em baixo e só a rede de segurança funciona |
+| `Tempo real em baixo` sempre nos logs, nada imprime | Tempo real mal configurado, ou a firewall do restaurante bloqueia a saída em 443 |
+| Talões saem todos de uma vez, com atraso | A ligação de tempo real esteve em baixo e recuperou — a recolha ao reconectar despejou a fila acumulada |
 | Recibos saem na cozinha ou no bar | Falta o posto *Pagamento* na configuração |
 | `Timeout ao contactar a impressora` | IP errado, impressora desligada, ou porta 9100 fechada |
 | `Não foi possível abrir a impressora "X"` | Nome errado em `printerName` — confirme em *Definições → Impressoras* do Windows (tem de ser exatamente igual) |

@@ -54,11 +54,11 @@ try {
   process.exit(1);
 }
 
-const SERVER_URL = (config.serverUrl || "").replace(/\/+$/, "");
+const SERVER_URL = (config.serverUrl || "https://new.qomanda.eu").replace(/\/+$/, "");
 const TOKEN = config.token || "";
 const PRINTERS = config.printers || {};
-const REALTIME_URL = (config.realtimeUrl || "").replace(/\/+$/, "");
-const REALTIME_KEY = config.realtimeKey || "";
+const REALTIME_URL = (config.realtimeUrl || "https://realtime.qomanda.eu").replace(/\/+$/, "");
+const REALTIME_KEY = config.realtimeKey || "a0g4w5Gk3ujFL9wurqHyCdEOmf5fQdLsFLHtHw139pBmZFojPrXQSIWx9Zd6BtxAl2fywhXq379ZG0hSF7jw";
 // Rede de segurança, só usada quando o WebSocket está em baixo.
 const FALLBACK_POLL_MS = Math.max(15000, config.fallbackPollMs || 60000);
 const PRINT_TIMEOUT_MS = 10000;

@@ -36,35 +36,27 @@ pub struct PrintersConfig {
     pub payment: Option<PrinterConfig>,
 }
 
-/// Rede de segurança, só usada quando o WebSocket está em baixo.
-pub const DEFAULT_FALLBACK_POLL_MS: u64 = 60_000;
-const MIN_FALLBACK_POLL_MS: u64 = 15_000;
+pub const DEFAULT_SERVER_URL: &str = "https://new.qomanda.eu";
+pub const DEFAULT_REALTIME_URL: &str = "https://realtime.qomanda.eu";
+pub const DEFAULT_REALTIME_KEY: &str = "a0g4w5Gk3ujFL9wurqHyCdEOmf5fQdLsFLHtHw139pBmZFojPrXQSIWx9Zd6BtxAl2fywhXq379ZG0hSF7jw";
 
-// `serde(default)` ao nível da struct: um config.json gravado por uma versão
-// anterior não tem `realtimeUrl`/`realtimeKey`/`fallbackPollMs`. Sem isto a
-// desserialização falhava e o `unwrap_or_default()` do `load()` apagava toda a
-// configuração do restaurante na primeira atualização.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AgentConfig {
     pub server_url: String,
     pub token: String,
-    /// Servidor de tempo real (Soketi) e a sua chave pública. Vazios = o agente
-    /// arranca à mesma, mas fica preso ao poll de segurança.
     pub realtime_url: String,
     pub realtime_key: String,
-    pub fallback_poll_ms: u64,
     pub printers: PrintersConfig,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            server_url: String::new(),
+            server_url: DEFAULT_SERVER_URL.to_string(),
             token: String::new(),
-            realtime_url: String::new(),
-            realtime_key: String::new(),
-            fallback_poll_ms: DEFAULT_FALLBACK_POLL_MS,
+            realtime_url: DEFAULT_REALTIME_URL.to_string(),
+            realtime_key: DEFAULT_REALTIME_KEY.to_string(),
             printers: PrintersConfig::default(),
         }
     }
@@ -73,16 +65,16 @@ impl Default for AgentConfig {
 impl AgentConfig {
     pub fn is_valid(&self) -> bool {
         let has_printer = self.printers.kitchen.as_ref().is_some_and(PrinterConfig::is_configured)
-            || self.printers.bar.as_ref().is_some_and(PrinterConfig::is_configured);
-        !self.server_url.trim().is_empty() && !self.token.trim().is_empty() && has_printer
+            || self.printers.bar.as_ref().is_some_and(PrinterConfig::is_configured)
+            || self.printers.payment.as_ref().is_some_and(PrinterConfig::is_configured);
+        let server = if self.server_url.trim().is_empty() { DEFAULT_SERVER_URL } else { self.server_url.trim() };
+        !server.is_empty() && !self.token.trim().is_empty() && has_printer
     }
 
     pub fn realtime_enabled(&self) -> bool {
-        !self.realtime_url.trim().is_empty() && !self.realtime_key.trim().is_empty()
-    }
-
-    pub fn fallback_poll_interval(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(self.fallback_poll_ms.max(MIN_FALLBACK_POLL_MS))
+        let r_url = if self.realtime_url.trim().is_empty() { DEFAULT_REALTIME_URL } else { self.realtime_url.trim() };
+        let r_key = if self.realtime_key.trim().is_empty() { DEFAULT_REALTIME_KEY } else { self.realtime_key.trim() };
+        !r_url.is_empty() && !r_key.is_empty()
     }
 }
 
@@ -100,10 +92,20 @@ pub fn load(app: &AppHandle) -> AgentConfig {
         Ok(p) => p,
         Err(_) => return AgentConfig::default(),
     };
-    match fs::read_to_string(&path) {
+    let mut config: AgentConfig = match fs::read_to_string(&path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
         Err(_) => AgentConfig::default(),
+    };
+    if config.server_url.trim().is_empty() {
+        config.server_url = DEFAULT_SERVER_URL.to_string();
     }
+    if config.realtime_url.trim().is_empty() {
+        config.realtime_url = DEFAULT_REALTIME_URL.to_string();
+    }
+    if config.realtime_key.trim().is_empty() {
+        config.realtime_key = DEFAULT_REALTIME_KEY.to_string();
+    }
+    config
 }
 
 pub fn save(app: &AppHandle, config: &AgentConfig) -> Result<(), String> {

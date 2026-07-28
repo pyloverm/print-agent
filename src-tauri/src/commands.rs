@@ -65,7 +65,6 @@ pub fn stop_agent(app: AppHandle, state: State<AppState>) -> Result<(), String> 
     let status = AgentStatus {
         running: false,
         realtime_connected: false,
-        fallback_polling: false,
         ..state.status.lock().unwrap().clone()
     };
     *state.status.lock().unwrap() = status.clone();

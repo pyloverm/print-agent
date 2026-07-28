@@ -13,16 +13,15 @@ pub struct LogEntry {
     pub message: String,
 }
 
-/// O estado que a barra superior mostra. `realtimeConnected` e `fallbackPolling`
-/// são mutuamente exclusivos enquanto o agente corre: ou o servidor nos avisa,
-/// ou estamos a perguntar de tempos a tempos porque o aviso não chega.
+/// O estado que a barra superior mostra. Sem poll de segurança, o tempo real é
+/// o único caminho até à fila: `realtimeConnected` a falso significa que nenhum
+/// talão está a sair, e a interface tem de o dizer sem ambiguidade.
 #[derive(Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentStatus {
     pub running: bool,
     pub realtime_configured: bool,
     pub realtime_connected: bool,
-    pub fallback_polling: bool,
     pub last_error: Option<String>,
     /// Último contacto bem-sucedido com o servidor (recolha de jobs).
     pub last_activity_at: Option<String>,

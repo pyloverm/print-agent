@@ -21,7 +21,6 @@ const EMPTY_STATUS: AgentStatus = {
   running: false,
   realtimeConfigured: false,
   realtimeConnected: false,
-  fallbackPolling: false,
   lastError: null,
   lastActivityAt: null,
 };

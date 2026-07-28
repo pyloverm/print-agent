@@ -1,9 +1,8 @@
 {
-  "serverUrl": "https://o-seu-dominio-qomanda.com",
+  "serverUrl": "https://new.qomanda.eu",
   "token": "qpa_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "realtimeUrl": "wss://realtime.o-seu-dominio-qomanda.com",
-  "realtimeKey": "a-chave-publica-do-soketi",
-  "fallbackPollMs": 60000,
+  "realtimeUrl": "https://realtime.qomanda.eu",
+  "realtimeKey": "a0g4w5Gk3ujFL9wurqHyCdEOmf5fQdLsFLHtHw139pBmZFojPrXQSIWx9Zd6BtxAl2fywhXq379ZG0hSF7jw",
   "printers": {
     "kitchen": { "host": "192.168.1.50", "port": 9100 },
     "bar": { "host": "192.168.1.51", "port": 9100 },

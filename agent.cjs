@@ -84,13 +84,11 @@ function normalizeUrl(value, kind) {
   return `${secure ? "https" : "http"}://${rest}`;
 }
 
-const SERVER_URL = normalizeUrl(config.serverUrl, "http");
+const SERVER_URL = normalizeUrl(config.serverUrl || "https://new.qomanda.eu", "http");
 const TOKEN = config.token || "";
 const PRINTERS = config.printers || {};
-const REALTIME_URL = normalizeUrl(config.realtimeUrl, "ws");
-const REALTIME_KEY = config.realtimeKey || "";
-// Rede de segurança, só usada quando o WebSocket está em baixo.
-const FALLBACK_POLL_MS = Math.max(15000, config.fallbackPollMs || 60000);
+const REALTIME_URL = normalizeUrl(config.realtimeUrl || "https://realtime.qomanda.eu", "ws");
+const REALTIME_KEY = config.realtimeKey || "a0g4w5Gk3ujFL9wurqHyCdEOmf5fQdLsFLHtHw139pBmZFojPrXQSIWx9Zd6BtxAl2fywhXq379ZG0hSF7jw";
 const PRINT_TIMEOUT_MS = 10000;
 const REQUEST_TIMEOUT_MS = 10000;
 
@@ -106,7 +104,7 @@ const REALTIME_ENABLED = Boolean(REALTIME_URL && REALTIME_KEY);
 /**
  * Canal de despertar. DEVE ser idêntico ao cálculo de
  * src/lib/print-agent-channel.ts no servidor — se divergir, o agente escuta um
- * canal onde ninguém publica e cai silenciosamente no poll de segurança.
+ * canal onde ninguém publica e nunca recebe um único talão.
  */
 const CHANNEL = `print-agent-${createHash("sha256").update(TOKEN).digest("hex").slice(0, 32)}`;
 
@@ -433,22 +431,6 @@ async function drainJobs(reason) {
   }
 }
 
-// ── Poll de segurança (só enquanto o WebSocket estiver em baixo) ─────────
-let fallbackTimer = null;
-
-function startFallbackPolling(why) {
-  if (fallbackTimer) return;
-  console.warn(`[qomanda-agent] Poll de segurança ATIVO (${why}) — a cada ${FALLBACK_POLL_MS / 1000}s.`);
-  fallbackTimer = setInterval(() => drainJobs("poll de segurança"), FALLBACK_POLL_MS);
-}
-
-function stopFallbackPolling() {
-  if (!fallbackTimer) return;
-  clearInterval(fallbackTimer);
-  fallbackTimer = null;
-  console.log("[qomanda-agent] Poll de segurança DESATIVADO (tempo real ligado).");
-}
-
 // ── WebSocket mínimo (RFC 6455) ─────────────────────────────────────────
 // O Node 12 — o runtime embutido no .exe para Windows 7 — não tem `WebSocket`
 // global; só chegou no Node 22. E acrescentar o pacote `ws` quebrava a
@@ -667,6 +649,52 @@ function openWebSocket(url, handlers) {
 let ws = null;
 let reconnectAttempts = 0;
 let reconnectTimer = null;
+let keepaliveTimer = null;
+
+// Keepalive. No protocolo Pusher é o CLIENTE que tem de dar sinal de vida: o
+// servidor fecha a ligação de um cliente calado há mais de `activity_timeout`
+// segundos (120 por omissão). Sem isto a ligação caía de 2 em 2 minutos e cada
+// reconexão fazia uma recolha — ou seja, uma consulta à base de dados a cada
+// 2 minutos, que é precisamente o que o tempo real veio evitar.
+// Pingamos a 75% da janela anunciada: uma fração em vez de uma margem fixa,
+// para funcionar tanto com os 120 s do Soketi (ping a 90 s) como com um valor
+// curto — uma margem fixa de 10 s daria um período negativo se o servidor
+// anunciasse menos do que isso.
+const DEFAULT_ACTIVITY_TIMEOUT_MS = 120000;
+const KEEPALIVE_FRACTION = 0.75;
+const MIN_KEEPALIVE_MS = 1000;
+
+/**
+ * O `data` do `connection_established` vem, no protocolo Pusher, como uma
+ * STRING que contém JSON — mas alguns servidores mandam o objeto diretamente.
+ */
+function activityTimeoutMs(data) {
+  let parsed = data;
+  if (typeof data === "string") {
+    try {
+      parsed = JSON.parse(data);
+    } catch (err) {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed.activity_timeout !== "number") return null;
+  return parsed.activity_timeout * 1000;
+}
+
+function startKeepalive(timeoutMs) {
+  stopKeepalive();
+  const window = timeoutMs || DEFAULT_ACTIVITY_TIMEOUT_MS;
+  const period = Math.max(MIN_KEEPALIVE_MS, Math.floor(window * KEEPALIVE_FRACTION));
+  keepaliveTimer = setInterval(() => {
+    if (ws) ws.sendText(JSON.stringify({ event: "pusher:ping", data: {} }));
+  }, period);
+}
+
+function stopKeepalive() {
+  if (!keepaliveTimer) return;
+  clearInterval(keepaliveTimer);
+  keepaliveTimer = null;
+}
 
 function connectRealtime() {
   if (!REALTIME_ENABLED) return;
@@ -688,6 +716,9 @@ function connectRealtime() {
 
       switch (msg.event) {
         case "pusher:connection_established":
+          // O servidor anuncia aqui de quanto em quanto tempo espera ver sinal
+          // de vida. Pingamos com uma margem antes disso.
+          startKeepalive(activityTimeoutMs(msg.data));
           // Canal público: nenhuma autorização necessária — o segredo é o
           // próprio nome do canal, derivado do token.
           ws.sendText(JSON.stringify({ event: "pusher:subscribe", data: { channel: CHANNEL } }));
@@ -695,7 +726,6 @@ function connectRealtime() {
 
         case "pusher_internal:subscription_succeeded":
           console.log("[qomanda-agent] Tempo real ligado — à espera de trabalhos.");
-          stopFallbackPolling();
           // Apanhar o que possa ter sido enfileirado enquanto estávamos offline.
           drainJobs("ligação estabelecida");
           break;
@@ -724,14 +754,16 @@ function connectRealtime() {
 
 function scheduleReconnect(why) {
   ws = null;
-  // Sem tempo real, a fila só é vista pelo poll: ativá-lo é o que evita
-  // perder um ticket de cozinha durante a avaria.
-  startFallbackPolling(why);
-
+  stopKeepalive();
   if (reconnectTimer) return;
   reconnectAttempts++;
   // Backoff exponencial travado a 60 s.
   const delay = Math.min(2000 * Math.pow(2, Math.min(reconnectAttempts - 1, 5)), 60000);
+  // Enquanto isto durar não sai nenhum talão: o tempo real é o único caminho
+  // até à fila. A recolha feita ao subscrever recupera tudo o que se acumulou
+  // entretanto, e o servidor reentrega o que nunca foi confirmado — os talões
+  // atrasam-se, não se perdem.
+  console.warn(`[qomanda-agent] Tempo real em baixo (${why}) — nova tentativa em ${delay / 1000}s.`);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connectRealtime();
@@ -748,16 +780,18 @@ if (!hasFatalError) {
       .join(" · ")}`
   );
 
-  if (REALTIME_ENABLED) {
+  // Sem poll de segurança, o tempo real é o ÚNICO caminho até à fila. Um agente
+  // sem servidor de tempo real não receberia nenhum talão — mais vale dizê-lo e
+  // parar do que ficar a correr sem imprimir nada.
+  if (!REALTIME_ENABLED) {
+    fatal(
+      "realtimeUrl/realtimeKey não configurados.",
+      "Sem tempo real o agente não recebe nenhum talão. Preencha-os no config.json."
+    );
+  } else {
     console.log(`[qomanda-agent] Tempo real: ${REALTIME_URL}`);
     connectRealtime();
-  } else {
-    console.warn("[qomanda-agent] ATENÇÃO: realtimeUrl/realtimeKey não configurados.");
-    console.warn("[qomanda-agent] O agente vai funcionar apenas por poll, o que mantém a base de dados");
-    console.warn("[qomanda-agent] permanentemente acordada. Configure o tempo real assim que possível.");
-    startFallbackPolling("tempo real não configurado");
+    // Recolha inicial: pode haver trabalho em fila desde a última paragem.
+    drainJobs("arranque");
   }
-
-  // Recolha inicial: pode haver trabalho em fila desde a última paragem.
-  drainJobs("arranque");
 }
