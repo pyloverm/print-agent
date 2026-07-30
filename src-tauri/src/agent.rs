@@ -593,11 +593,11 @@ mod tests {
     #[test]
     fn normaliza_o_esquema_do_endereco_do_servidor() {
         // O outro caso que apareceu em produção: os dois campos trocados.
-        assert_eq!(http_base("wss://new.qomanda.eu"), "https://new.qomanda.eu");
+        assert_eq!(http_base("wss://qomanda.eu"), "https://qomanda.eu");
         assert_eq!(http_base("ws://127.0.0.1:8099"), "http://127.0.0.1:8099");
-        assert_eq!(http_base("https://new.qomanda.eu/"), "https://new.qomanda.eu");
+        assert_eq!(http_base("https://qomanda.eu/"), "https://qomanda.eu");
         assert_eq!(http_base("http://127.0.0.1:8099"), "http://127.0.0.1:8099");
-        assert_eq!(http_base("  new.qomanda.eu  "), "https://new.qomanda.eu");
+        assert_eq!(http_base("  qomanda.eu  "), "https://qomanda.eu");
     }
 
     #[test]

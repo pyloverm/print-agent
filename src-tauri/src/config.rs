@@ -36,7 +36,7 @@ pub struct PrintersConfig {
     pub payment: Option<PrinterConfig>,
 }
 
-pub const DEFAULT_SERVER_URL: &str = "https://new.qomanda.eu";
+pub const DEFAULT_SERVER_URL: &str = "https://qomanda.eu";
 pub const DEFAULT_REALTIME_URL: &str = "https://realtime.qomanda.eu";
 pub const DEFAULT_REALTIME_KEY: &str = "a0g4w5Gk3ujFL9wurqHyCdEOmf5fQdLsFLHtHw139pBmZFojPrXQSIWx9Zd6BtxAl2fywhXq379ZG0hSF7jw";
 

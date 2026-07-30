@@ -34,7 +34,7 @@ const STATION_ICON: Record<'kitchen' | 'bar' | 'payment', string> = {
   payment: '🧾',
 };
 
-const DEFAULT_SERVER_URL = 'https://new.qomanda.eu';
+const DEFAULT_SERVER_URL = 'https://qomanda.eu';
 const DEFAULT_REALTIME_URL = 'https://realtime.qomanda.eu';
 const DEFAULT_REALTIME_KEY = 'a0g4w5Gk3ujFL9wurqHyCdEOmf5fQdLsFLHtHw139pBmZFojPrXQSIWx9Zd6BtxAl2fywhXq379ZG0hSF7jw';
 
